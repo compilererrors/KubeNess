@@ -55,13 +55,16 @@ spec:
           ports:
             - name: http
               containerPort: 8080
+          # Generous timeouts: the model pod can keep the node's CPUs busy.
           readinessProbe:
             httpGet: {path: /readyz, port: http}
             periodSeconds: 10
+            timeoutSeconds: 5
           livenessProbe:
             httpGet: {path: /healthz, port: http}
             periodSeconds: 20
-            failureThreshold: 3
+            timeoutSeconds: 5
+            failureThreshold: 6
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

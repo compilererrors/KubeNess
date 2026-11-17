@@ -88,7 +88,7 @@ observer:
   watchTimeout: 60s
   freshnessBudget: 3m
   resources:
-    requests: {cpu: 50m, memory: 96Mi}
+    requests: {cpu: 100m, memory: 96Mi}
     limits: {memory: 256Mi}
 
 # Local LLM (stage 2). Template analysis is always produced; the model is an

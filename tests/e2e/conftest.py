@@ -92,8 +92,38 @@ class PortForward:
             self.proc.terminate()
             self.proc.wait(timeout=10)
 
+    def restart(self) -> None:
+        self.stop()
+        self.start()
+
     def client(self) -> httpx.Client:
-        return httpx.Client(base_url=f"http://127.0.0.1:{self.port}", timeout=10)
+        return httpx.Client(base_url="http://127.0.0.1", timeout=10, transport=_Reconnecting(self))
+
+
+class _Reconnecting(httpx.BaseTransport):
+    """Sends to the port-forward's current port. port-forward binds to one pod and
+    dies with it, so a dropped connection starts it again (once per request)."""
+
+    def __init__(self, pf: PortForward) -> None:
+        self.pf = pf
+        self.inner = httpx.HTTPTransport()
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        for attempt in (1, 2):
+            request.url = request.url.copy_with(port=self.pf.port)
+            try:
+                return self.inner.handle_request(request)
+            except (httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError):
+                if attempt == 2:
+                    raise
+                try:
+                    self.pf.restart()
+                except AssertionError as e:   # no ready pod yet; let the caller retry
+                    raise httpx.ConnectError(str(e), request=request) from e
+        raise AssertionError("unreachable")
+
+    def close(self) -> None:
+        self.inner.close()
 
 
 @pytest.fixture(scope="session")

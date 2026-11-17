@@ -167,7 +167,7 @@ def create_app(cfg: Config, store: Store, status: Callable[[], dict],
         return await call_next(request)
 
     @app.get("/healthz", include_in_schema=False)
-    def healthz() -> PlainTextResponse:
+    async def healthz() -> PlainTextResponse:
         return PlainTextResponse("ok")
 
     @app.get("/readyz", include_in_schema=False)

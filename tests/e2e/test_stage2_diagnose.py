@@ -62,10 +62,14 @@ def test_crash_is_diagnosed_from_masked_logs(api):
     assert any(log["ref"] in f["evidence_refs"] for f in template["payload"]["observed_facts"]) or \
         not log["payload"]["previous"]
 
-    model = [a for a in d["analyses"] if a["source"] == "model"][-1]
-    print(f"model analysis ({model['status']}, {model['latency_ms']} ms): {model['payload'] or model['error']}")
+    runs = [a for a in d["analyses"] if a["source"] == "model"]
+    for a in runs:
+        print(f"model analysis {a['model']} ({a['status']}, {a['latency_ms']} ms): {a['payload'] or a['error']}")
+    # K17 is the primary model's latency; an escalated larger model is slower by design.
+    if runs[0]["status"] == "ok":
+        kpi("K17", "e2e model latency, primary model", runs[0]["latency_ms"] / 1000, "s", max=15, timing=True)
+    model = runs[-1]
     assert model["status"] == "ok", model["error"]
-    kpi("K17", "e2e model latency", model["latency_ms"] / 1000, "s", max=15)
     assert model["payload"]["possible_causes"]
     for claim in model["payload"]["observed_facts"] + model["payload"]["possible_causes"]:
         assert claim["evidence_refs"] and set(claim["evidence_refs"]) <= refs

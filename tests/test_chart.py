@@ -268,3 +268,14 @@ def test_tiered_profile_fits_both_models():
     assert cfg.model.escalation.when == ["invalid", "unsupported", "troubleshoot"]
     dep = by(docs, "Deployment", "kubeness-model")[0]["spec"]["template"]["spec"]["containers"][0]
     assert _gi(dep["resources"]["limits"]["memory"]) >= MODEL_NEEDS_GI["0.6b"] + MODEL_NEEDS_GI["1.7b"]
+
+
+def test_observer_probes_tolerate_a_starved_cpu():
+    """The model pod can keep the node's CPUs busy; a slow answer must not get the observer killed."""
+    dep = by(render("model.enabled=true"), "Deployment", "kubeness-observer")[0]
+    c = dep["spec"]["template"]["spec"]["containers"][0]
+    for probe in (c["readinessProbe"], c["livenessProbe"]):
+        assert probe.get("timeoutSeconds", 1) >= 5
+    live = c["livenessProbe"]
+    assert live["periodSeconds"] * live["failureThreshold"] >= 120
+    assert c["resources"]["requests"]["cpu"] in ("100m", "200m", "250m")

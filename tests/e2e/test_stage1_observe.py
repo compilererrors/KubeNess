@@ -126,16 +126,12 @@ def test_monitoring_continues_without_ui():
         pf.stop()
 
 
-def test_incidents_survive_observer_restart(ui, api):
+def test_incidents_survive_observer_restart(api):
     before = {i["id"] for i in incidents(api) if i["state"] != "resolved"}
     assert before
     pod = kjson("-n", RELEASE_NS, "get", "pods", "-l", "app.kubernetes.io/component=observer")["items"][0]
     kubectl("-n", RELEASE_NS, "delete", "pod", pod["metadata"]["name"], "--wait=true", timeout=120)
     kubectl("-n", RELEASE_NS, "rollout", "status", "deployment/kubeness-observer", "--timeout=180s", timeout=200)
-    # port-forward binds to one pod; reconnect the shared session to the new one.
-    ui.stop()
-    ui.start()
-    api.base_url = f"http://127.0.0.1:{ui.port}"
     after = wait_for(lambda: {i["id"] for i in incidents(api) if i["state"] != "resolved"},
                      timeout=60, what="incidents after restart")
     assert before <= after

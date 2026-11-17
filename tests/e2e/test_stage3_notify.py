@@ -116,7 +116,7 @@ def test_recovery_is_notified_once(api, sink):
     assert r["payload"]["state"] == "resolved" and r["payload"]["text"].startswith("[RESOLVED]")
 
 
-def test_queued_notification_survives_observer_restart(ui, api, sink):
+def test_queued_notification_survives_observer_restart(api, sink):
     """N32: a notification queued while the provider is down is sent after an observer restart."""
     inc = STATE["leaky"]
     set_sink_failing(sink, True)
@@ -131,10 +131,6 @@ def test_queued_notification_survives_observer_restart(ui, api, sink):
     finally:
         set_sink_failing(sink, False)
     kubectl("-n", RELEASE_NS, "rollout", "status", "deployment/kubeness-observer", "--timeout=180s", timeout=200)
-    # The port-forward followed the old pod; reconnect the shared UI client.
-    ui.stop()
-    ui.start()
-    api.base_url = f"http://127.0.0.1:{ui.port}"
     (r,) = wait_for(lambda: for_incident(sink, inc["id"], "resolved"), timeout=120, what="resolved after restart")
     kpi("N32", "e2e queued notifications delivered after observer restart", 1, "count", eq=1)
 
