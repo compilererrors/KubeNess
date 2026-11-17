@@ -1,0 +1,62 @@
+# Example observer configuration for running outside the cluster during development.
+# Inside the cluster the Helm chart renders this file from values.yaml.
+cluster: lab
+kubernetes:
+  # Required outside a cluster. There is no fallback to the current kubeconfig context.
+  context: kind-kubeness
+access:
+  namespaces: [lab]
+  readLogs: true
+  readNodes: false
+collection:
+  logTailLines: 100
+  logWindow: 5m
+  maxEvents: 20
+alarms:
+  rules: [restarts, imagePull, readiness, scheduling, oom, observerDegraded]
+  recoveryWindow: 60s
+  recoverySettle: 30s
+  reopenWindow: 30m
+  repeatInterval: 30m
+  criticalWorkloads: []
+  escalateAfter: null
+  restarts:
+    count: 3
+    window: 5m
+    crashLoopFor: 5m
+  imagePull:
+    for: 60s
+  readiness:
+    for: 2m
+  scheduling:
+    for: 2m
+  oom:
+    window: 30m
+observer:
+  evaluationInterval: 10s
+  resync: 10m
+  watchTimeout: 60s
+  freshnessBudget: 3m
+  dataDir: ./data
+model:
+  enabled: false
+  url: http://127.0.0.1:11434
+  name: qwen3:0.6b
+  timeout: 20s
+  think: false
+  numThreads: 4
+  maxConcurrentRequests: 1
+  queueSize: 20
+notifications:
+  # Needs a running notifier; see the Helm chart.
+  enabled: false
+  url: http://127.0.0.1:8081
+  tokenFile: ./data/notifier-token
+  timeout: 10s
+  maxAttempts: 20
+  backoff: 10s
+  backoffMax: 10m
+  heartbeatInterval: 0s
+ui:
+  port: 8080
+  allowedHosts: [127.0.0.1, localhost]

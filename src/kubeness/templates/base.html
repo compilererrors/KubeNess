@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="15">
+<title>{% block title %}KubeNess{% endblock %}</title>
+<style>
+  :root {
+    --navy: #122033; --teal: #22B8A8; --amber: #EBA43A;
+    --bg: #F7F8FA; --card: #FFFFFF; --text: #1B2430; --muted: #5B6675; --line: #DDE2E8;
+    --critical: #C2372B; --warning: #B26A00; --info: #2C6E9B; --ok: #1E8C6E;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0E1621; --card: #152131; --text: #E6EBF1; --muted: #93A0B0; --line: #26364A; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+  header { background: var(--navy); color: #fff; padding: 12px 20px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  header a { color: #fff; text-decoration: none; font-weight: 600; font-size: 16px; }
+  header .tag { color: var(--teal); font-size: 12px; }
+  .status { margin-left: auto; display: flex; gap: 12px; font-size: 12px; flex-wrap: wrap; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
+  .dot.ok { background: var(--teal); } .dot.bad { background: var(--amber); } .dot.off { background: #6B7785; }
+  main { max-width: 1100px; margin: 0 auto; padding: 20px 16px; }
+  h1 { font-size: 20px; margin: 0 0 4px; } h2 { font-size: 15px; margin: 24px 0 8px; }
+  .muted { color: var(--muted); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 12px; color: var(--muted); font-weight: 600; }
+  tr.resolved td { color: var(--muted); }
+  a { color: var(--teal); }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; border: 1px solid currentColor; }
+  .sev-critical { color: var(--critical); } .sev-warning { color: var(--warning); } .sev-info { color: var(--info); }
+  .st-firing { color: var(--critical); } .st-pending { color: var(--warning); } .st-recovering { color: var(--info); } .st-resolved { color: var(--ok); }
+  .nt-provider_accepted { color: var(--ok); } .nt-queued, .nt-sending { color: var(--info); }
+  .nt-retry_scheduled { color: var(--warning); } .nt-failed { color: var(--critical); }
+  .actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 8px; }
+  .actions form { margin: 0; display: flex; gap: 6px; }
+  button, select { font: inherit; padding: 3px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--card); color: var(--text); cursor: pointer; }
+  form.ask { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; }
+  form.ask input[name=question] { flex: 1 1 220px; font: inherit; padding: 3px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--card); color: var(--text); }
+  .qa { border-top: 1px solid var(--line); padding-top: 8px; margin-top: 8px; }
+  .compare { display: flex; gap: 16px; flex-wrap: wrap; } .compare .col { flex: 1 1 280px; min-width: 0; }
+  .policy { font-size: 12px; color: var(--muted); margin-bottom: 16px; }
+  pre { white-space: pre-wrap; word-break: break-word; font-size: 12px; margin: 4px 0 0; }
+  .scroll { overflow-x: auto; }
+  .refs a { font-size: 12px; margin-left: 4px; }
+  ul.claims { margin: 4px 0 8px; padding-left: 20px; }
+  .label { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin-top: 10px; }
+  .hypo { font-style: italic; }
+  tr:target td { background: rgba(34, 184, 168, .12); }
+</style>
+</head>
+<body>
+<header>
+  <a href="/">KubeNess</a><span class="tag">Watch. Diagnose. Notify.</span>
+  <div class="status">
+    <span title="{{ status.observerDetail }}"><span class="dot {{ 'ok' if status.observer == 'ok' else 'bad' }}"></span>observer {{ status.observer }}</span>
+    {% set m = status.model | default("disabled") %}
+    <a href="/models" style="font-size:12px;font-weight:400">models</a>
+    <span title="{{ status.modelDetail | default('') }}"><span class="dot {{ 'ok' if m == 'ok' else ('off' if m == 'disabled' else 'bad') }}"></span>model {{ m }}</span>
+    {% set nt = status.notifier | default("disabled") %}
+    <span title="{{ status.notifierDetail | default('') }}"><span class="dot {{ 'ok' if nt == 'ok' else ('off' if nt in ('disabled', 'unknown') else 'bad') }}"></span>notifier {{ nt }}</span>
+  </div>
+</header>
+<main>
+  <div class="policy">
+    Effective policy: read only for the observer · cluster {{ cfg.cluster }} ·
+    {% for s in cfg.access.silo_list() %}silo {{ s.name }} ({{ s.namespaces | join(", ") }}): {{ s.profile }}{% if s.profile != "observe" and not cfg.access.read_logs %}, logs off{% endif %}{% if not loop.last %} · {% endif %}{% endfor %} ·
+    {{ ("writes: " ~ cfg.actions.allowed | join(", ") ~ " with approval in remediate silos") if cfg.actions.enabled else "writes disabled" }} ·
+    notifications {{ "enabled" if cfg.notifications.enabled else "disabled" }}
+  </div>
+  {% block content %}{% endblock %}
+</main>
+</body>
+</html>

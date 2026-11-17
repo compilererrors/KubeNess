@@ -1,0 +1,9 @@
+# qwen3:1.7b: ~1.4 GB of weights, about 2-2.5 GB in use; roughly twice the latency of 0.6b.
+model:
+  name: qwen3:1.7b
+  image: {tag: qwen3-1.7b}
+  timeout: 45s
+  numThreads: 4
+  resources:
+    requests: {cpu: "2", memory: 2Gi}
+    limits: {memory: 3Gi}

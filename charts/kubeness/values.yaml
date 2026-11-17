@@ -1,0 +1,172 @@
+# Observer (stage 1), optional local model (stage 2) and notifier (stage 3).
+# Read-only access in the watched namespaces; the executor is not part of the chart.
+
+cluster: lab
+
+image:
+  repository: kubeness
+  tag: 0.1.0
+  pullPolicy: IfNotPresent
+
+# Access profile. A false flag means the grant is left out; it is not an RBAC
+# deny rule. Other RoleBindings can still give the ServiceAccount more access,
+# so check effective permissions with `kubectl auth can-i`.
+access:
+  namespaces: [lab]
+  # Profile of these namespaces: observe | investigate | recommend | remediate.
+  #   observe: status, events, specs   investigate: + pods/log
+  #   recommend: + model fix proposals remediate: + executor writer role (with actions.enabled)
+  profile: investigate
+  # Silos replace namespaces/profile: groups of namespaces with their own profile, e.g.
+  #   silos:
+  #     - {name: lab, namespaces: [lab], profile: remediate}
+  #     - {name: shop, namespaces: [shop, shop-api], profile: observe}
+  silos: []
+  readLogs: true
+  # Optional read of Services and EndpointSlices for service troubleshooting.
+  readServices: false
+  # Nodes are cluster-scoped: a separate opt-in that adds a ClusterRole (get/list
+  # nodes) for node capacity and taints in scheduling evidence.
+  readNodes: false
+  # Never granted; setting either fails the install.
+  readSecrets: false
+  exec: false
+
+# Writes to the cluster (stage 6, optional). Both must be true: the executor pod
+# gets a writer Role (get/patch deployments) in the watched namespaces, and the UI
+# offers restart-deployment with approval. Off: there is no writer identity.
+actions:
+  enabled: false
+  # restart-deployment | rollback-deployment
+  allowed: [restart-deployment]
+executor:
+  enabled: false
+
+# Experimental: the model troubleshoots an incident with read-only tools on request,
+# and may propose an allowed fix (silos with recommend or remediate). Needs model.enabled.
+experimental:
+  troubleshoot:
+    enabled: false
+    maxSteps: 5
+    think: true
+    stepTimeout: 90s
+    proposeFixes: false
+
+collection:
+  logTailLines: 100
+  logWindow: 5m
+  maxEvents: 20
+
+alarms:
+  # observerDegraded: the observer's own collection exceeds the freshness budget.
+  rules: [restarts, imagePull, readiness, scheduling, oom, observerDegraded]
+  recoveryWindow: 60s
+  recoverySettle: 30s
+  reopenWindow: 30m
+  repeatInterval: 30m
+  # namespace/name of workloads whose incidents are raised as critical.
+  criticalWorkloads: []
+  # Raise a warning incident to critical after firing this long, e.g. 30m. null disables it.
+  escalateAfter: null
+  restarts:
+    count: 3
+    window: 5m
+    crashLoopFor: 5m
+  imagePull:
+    for: 60s
+  readiness:
+    for: 2m
+  scheduling:
+    for: 2m
+  oom:
+    # A second OOM kill within this window raises the incident from info to warning.
+    window: 30m
+
+observer:
+  evaluationInterval: 10s
+  resync: 10m
+  watchTimeout: 60s
+  freshnessBudget: 3m
+  resources:
+    requests: {cpu: 50m, memory: 96Mi}
+    limits: {memory: 256Mi}
+
+# Local LLM (stage 2). Template analysis is always produced; the model is an
+# optional enrichment validated against the evidence.
+model:
+  enabled: false
+  name: qwen3:0.6b
+  timeout: 20s
+  think: false
+  # Keep at or below the model pod's CPU request; see ModelConfig.num_threads.
+  numThreads: 4
+  maxConcurrentRequests: 1
+  queueSize: 20
+  # PoC: extra models (baked into the model image) that analyse every incident in
+  # the shadow for comparison; see /models in the UI. Raise the memory limit to fit.
+  compare: []
+  # Tiered models: name a larger model (baked into the model image) that takes over
+  # by rule (when): invalid | unsupported | ungrounded | critical | recurring | troubleshoot.
+  escalation:
+    model: null
+    when: [invalid, unsupported, troubleshoot]
+  image:
+    # Built by `make model-image`: CPU runtime with the model files baked in.
+    repository: kubeness-model
+    tag: qwen3-0.6b
+    pullPolicy: IfNotPresent
+  resources:
+    requests: {cpu: "2", memory: 1Gi}
+    limits: {memory: 2Gi}
+
+# Notifications (stage 3). The observer keeps an outbox and calls the notifier pod,
+# which alone mounts the destination Secret. Create that Secret outside the chart:
+#   kubectl -n kubeness create secret generic kubeness-notifications \
+#     --from-literal=url=https://ntfy.sh/<topic> [--from-literal=token=...] [--from-literal=heartbeatUrl=...]
+notifications:
+  enabled: false
+  provider: webhook          # webhook | ntfy | sns
+  destinationSecretRef: kubeness-notifications
+  timeout: 10s
+  maxAttempts: 20
+  backoff: 10s
+  backoffMax: 10m
+  # Heartbeat to the dead man's switch in the Secret's heartbeatUrl; 0s disables it.
+  heartbeatInterval: 0s
+  # Info events (new images, recurrences, restarts without an incident) as one digest.
+  digestInterval: 1h
+  # Notifier egress besides DNS. Core NetworkPolicy cannot filter by name, so the
+  # default is HTTPS to any address: a known limitation. Narrow it to the
+  # destination's addresses, or use a CNI FQDN policy or an egress proxy.
+  egress:
+    - to:
+        - ipBlock: {cidr: 0.0.0.0/0}
+      ports:
+        - {protocol: TCP, port: 443}
+  resources:
+    requests: {cpu: 10m, memory: 64Mi}
+    limits: {memory: 128Mi}
+
+persistence:
+  size: 1Gi
+  storageClassName: ""
+
+ui:
+  serviceType: ClusterIP
+  servicePort: 80
+  # Host header values the UI accepts (port-forward on localhost).
+  allowedHosts: [127.0.0.1, localhost]
+
+networkPolicy:
+  enabled: true
+  # Egress to the Kubernetes API. Depending on the CNI the rule is matched after
+  # the Service address is translated to the API server endpoint, so a rule for
+  # the ClusterIP on port 443 is often not enough. In kind the endpoint is the
+  # control plane node on port 6443:
+  #   kubectl --context kind-kubeness get endpointslices -n default -l kubernetes.io/service-name=kubernetes
+  apiServer:
+    cidrs: []          # e.g. [172.18.0.2/32]; empty disables the rule (observer cannot reach the API)
+    ports: [6443, 443]
+  # With Cilium, allow the API server by entity instead of IP.
+  cilium:
+    enabled: false

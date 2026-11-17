@@ -1,0 +1,12 @@
+.venv
+.git
+**/__pycache__
+.pytest_cache
+data
+*.db*
+*.docx
+*.pdf
+charts
+lab
+tests
+devstuff

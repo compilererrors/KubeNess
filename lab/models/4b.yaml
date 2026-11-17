@@ -1,0 +1,10 @@
+# qwen3:4b: ~2.5 GB of weights, about 3.5-4.5 GB in use. Needs a Docker VM with room
+# for it next to kind; expect several times the latency of 0.6b on CPU.
+model:
+  name: qwen3:4b
+  image: {tag: qwen3-4b}
+  timeout: 120s
+  numThreads: 6
+  resources:
+    requests: {cpu: "3", memory: 4Gi}
+    limits: {memory: 5Gi}

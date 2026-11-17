@@ -1,0 +1,6 @@
+apiVersion: v2
+name: kubeness
+description: Local diagnostic service for Kubernetes. Watch. Diagnose. Notify.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

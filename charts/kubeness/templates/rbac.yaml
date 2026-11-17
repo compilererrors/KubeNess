@@ -1,0 +1,93 @@
+{{- /* Flags that would widen access beyond what this chart implements fail the install. */ -}}
+{{- if .Values.access.readSecrets }}{{ fail "access.readSecrets is not supported: the observer never reads Secrets" }}{{ end }}
+{{- if .Values.access.exec }}{{ fail "access.exec is not supported: the observer never execs into pods" }}{{ end }}
+{{- if and .Values.actions .Values.actions.enabled (not .Values.executor.enabled) }}{{ fail "actions.enabled is not supported without executor.enabled" }}{{ end }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "kubeness.observer" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubeness.labels" . | nindent 4 }}
+{{- range $silo := (include "kubeness.silos" . | fromYaml).silos }}
+{{- $logs := and $.Values.access.readLogs (has $silo.profile (list "investigate" "recommend" "remediate")) }}
+{{- range $silo.namespaces }}
+---
+# Reader role for the observer in namespace {{ . }} (silo {{ $silo.name }}, profile {{ $silo.profile }}).
+# No Secrets, no exec, no writes. pods/log only from the investigate profile up.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "kubeness.observer" $ }}-reader
+  namespace: {{ . }}
+  labels:
+    {{- include "kubeness.labels" $ | nindent 4 }}
+    kubeness/silo: {{ $silo.name }}
+    kubeness/profile: {{ $silo.profile }}
+rules:
+  - apiGroups: [""]
+    resources: [pods, events]
+    verbs: [get, list, watch]
+  - apiGroups: [apps]
+    resources: [deployments, replicasets]
+    verbs: [get, list, watch]
+  {{- if $logs }}
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+  {{- end }}
+  {{- if $.Values.access.readServices }}
+  - apiGroups: [""]
+    resources: [services]
+    verbs: [get, list, watch]
+  - apiGroups: [discovery.k8s.io]
+    resources: [endpointslices]
+    verbs: [get, list, watch]
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "kubeness.observer" $ }}-reader
+  namespace: {{ . }}
+  labels:
+    {{- include "kubeness.labels" $ | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "kubeness.observer" $ }}-reader
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "kubeness.observer" $ }}
+    namespace: {{ $.Release.Namespace }}
+{{- end }}
+{{- end }}
+{{- if .Values.access.readNodes }}
+---
+# Opt-in, cluster-scoped: node capacity and taints for scheduling evidence.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "kubeness.observer" . }}-nodes
+  labels:
+    {{- include "kubeness.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "kubeness.observer" . }}-nodes
+  labels:
+    {{- include "kubeness.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "kubeness.observer" . }}-nodes
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "kubeness.observer" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

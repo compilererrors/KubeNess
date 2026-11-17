@@ -1,0 +1,172 @@
+{{- if .Values.notifications.enabled }}
+{{- $tokenName := printf "%s-token" (include "kubeness.notifier" .) }}
+{{- $existing := lookup "v1" "Secret" .Release.Namespace $tokenName }}
+# Shared token: authenticates the observer's calls to the notifier. NetworkPolicy
+# limits who can connect but does not identify the caller. Kept across upgrades.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $tokenName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubeness.labels" . | nindent 4 }}
+type: Opaque
+data:
+  token: {{ if $existing }}{{ index $existing.data "token" }}{{ else }}{{ randAlphaNum 48 | b64enc }}{{ end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kubeness.notifier" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubeness.labels" . | nindent 4 }}
+data:
+  notifier.yaml: |
+    provider: {{ .Values.notifications.provider }}
+    destinationDir: /var/run/kubeness/destination
+    tokenFile: /var/run/kubeness/notifier/token
+    timeout: {{ .Values.notifications.timeout }}
+    port: 8081
+---
+# Holds the provider credential and nothing else: no Kubernetes API access, no
+# ServiceAccount token, no incident store.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "kubeness.notifier" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubeness.labels" . | nindent 4 }}
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "kubeness.notifier" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubeness.labels" . | nindent 4 }}
+    app.kubernetes.io/component: notifier
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "kubeness.notifierSelector" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "kubeness.notifierSelector" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ .Values.notifications | toJson | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "kubeness.notifier" . }}
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: notifier
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["python", "-m", "kubeness.notifier", "--config", "/etc/kubeness/notifier.yaml"]
+          ports:
+            - name: http
+              containerPort: 8081
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            {{- toYaml .Values.notifications.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/kubeness
+              readOnly: true
+            - name: token
+              mountPath: /var/run/kubeness/notifier
+              readOnly: true
+            - name: destination
+              mountPath: /var/run/kubeness/destination
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "kubeness.notifier" . }}
+        - name: token
+          secret:
+            secretName: {{ $tokenName }}
+            defaultMode: 0440
+        - name: destination
+          secret:
+            secretName: {{ .Values.notifications.destinationSecretRef }}
+            defaultMode: 0440
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kubeness.notifier" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubeness.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "kubeness.notifierSelector" . | nindent 4 }}
+  ports:
+    - name: http
+      port: 8081
+      targetPort: http
+{{- if .Values.networkPolicy.enabled }}
+---
+# Only the observer may call the notifier. Egress: DNS and the configured destinations.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "kubeness.notifier" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubeness.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "kubeness.notifierSelector" . | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "kubeness.observerSelector" . | nindent 14 }}
+      ports:
+        - {protocol: TCP, port: 8081}
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    {{- with .Values.notifications.egress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}
+{{- end }}

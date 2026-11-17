@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Models · KubeNess{% endblock %}
+{% block content %}
+<h1>Model comparison</h1>
+<p class="muted">Every incident is analysed by the primary model; shadow models get the same verified facts. Shadow results are validated and stored, never shown as the incident analysis. Grounded checks: analyses with a next check that names an object from the incident (heuristic).</p>
+<div class="card scroll">
+{% if rows %}
+<table>
+  <tr><th>Model</th><th>Role</th><th>Analyses</th><th>OK</th><th>Unavailable</th><th>Unsupported claims removed</th><th>Grounded checks</th><th>p50</th><th>p95</th></tr>
+  {% for r in rows %}
+  <tr><td>{{ r.model }}</td><td>{{ r.role }}</td><td>{{ r.analyses }}</td><td>{{ r.ok }}</td>
+    <td>{{ r.unavailable }}{% for k, v in r.errors.items() %}<br><span class="muted">{{ k }}: {{ v }}</span>{% endfor %}</td>
+    <td>{{ r.droppedClaims }}</td><td>{{ r.groundedChecks }}/{{ r.ok }}</td>
+    <td>{{ r.p50LatencyMs or "–" }} ms</td><td>{{ r.p95LatencyMs or "–" }} ms</td></tr>
+  {% endfor %}
+</table>
+{% else %}<p class="muted">No model analyses yet.</p>{% endif %}
+</div>
+{% endblock %}

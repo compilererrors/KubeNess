@@ -1,0 +1,212 @@
+{{- if and .Values.executor.enabled .Values.actions.enabled }}
+{{- $name := printf "%s-executor" (include "kubeness.fullname" .) }}
+{{- $tokenName := printf "%s-token" $name }}
+{{- $existing := lookup "v1" "Secret" .Release.Namespace $tokenName }}
+# Optional executor: the only writer, for exactly one named action. Its token is
+# separate from the notifier's and mounted only in observer and executor.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $tokenName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubeness.labels" . | nindent 4 }}
+type: Opaque
+data:
+  token: {{ if $existing }}{{ index $existing.data "token" }}{{ else }}{{ randAlphaNum 48 | b64enc }}{{ end }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubeness.labels" . | nindent 4 }}
+{{- range (include "kubeness.remediateNamespaces" . | fromJsonArray) }}
+---
+# Only in namespaces of remediate silos. restart-deployment and rollback-deployment
+# patch the pod template: get and patch on deployments, nothing else.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}-writer
+  namespace: {{ . }}
+  labels:
+    {{- include "kubeness.labels" $ | nindent 4 }}
+rules:
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, patch]
+  - apiGroups: [apps]
+    resources: [replicasets]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}-writer
+  namespace: {{ . }}
+  labels:
+    {{- include "kubeness.labels" $ | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}-writer
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ $.Release.Namespace }}
+{{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubeness.labels" . | nindent 4 }}
+data:
+  executor.yaml: |
+    namespaces: {{ include "kubeness.remediateNamespaces" . }}
+    tokenFile: /var/run/kubeness/executor/token
+    port: 8082
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubeness.labels" . | nindent 4 }}
+    app.kubernetes.io/component: executor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "kubeness.executorSelector" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "kubeness.executorSelector" . | nindent 8 }}
+      annotations:
+        checksum/namespaces: {{ include "kubeness.remediateNamespaces" . | sha256sum }}
+    spec:
+      serviceAccountName: {{ $name }}
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: executor
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["python", "-m", "kubeness.executor", "--config", "/etc/kubeness/executor.yaml"]
+          ports:
+            - name: http
+              containerPort: 8082
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests: {cpu: 10m, memory: 64Mi}
+            limits: {memory: 128Mi}
+          volumeMounts:
+            - {name: config, mountPath: /etc/kubeness, readOnly: true}
+            - {name: token, mountPath: /var/run/kubeness/executor, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $name }}
+        - name: token
+          secret:
+            secretName: {{ $tokenName }}
+            defaultMode: 0440
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubeness.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "kubeness.executorSelector" . | nindent 4 }}
+  ports:
+    - name: http
+      port: 8082
+      targetPort: http
+{{- if .Values.networkPolicy.enabled }}
+---
+# Only the observer may call the executor; egress to DNS and the API server.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubeness.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "kubeness.executorSelector" . | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "kubeness.observerSelector" . | nindent 14 }}
+      ports:
+        - {protocol: TCP, port: 8082}
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    {{- if .Values.networkPolicy.apiServer.cidrs }}
+    - to:
+        {{- range .Values.networkPolicy.apiServer.cidrs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        {{- range .Values.networkPolicy.apiServer.ports }}
+        - {protocol: TCP, port: {{ . }}}
+        {{- end }}
+    {{- end }}
+{{- if .Values.networkPolicy.cilium.enabled }}
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ $name }}-apiserver
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubeness.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      {{- include "kubeness.executorSelector" . | nindent 6 }}
+  egress:
+    - toEntities: [kube-apiserver]
+{{- end }}
+{{- end }}
+{{- end }}

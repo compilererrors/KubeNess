@@ -1,0 +1,57 @@
+# Faults for the stage 3 (Notify) e2e suite. Each carries a lab-fault label so the
+# tests can apply them one at a time.
+---
+# Image pull failure: the tag does not exist.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notify-image
+  namespace: lab
+  labels: {lab-fault: notify-image}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: notify-image}}
+  template:
+    metadata: {labels: {app: notify-image}}
+    spec:
+      containers:
+        - name: app
+          image: busybox:no-such-tag-2222
+          command: ["sleep", "3600"]
+---
+# Crash loop that logs a credential before failing. The notification must carry
+# neither the credential nor the raw log line.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notify-leaky
+  namespace: lab
+  labels: {lab-fault: notify-leaky}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: notify-leaky}}
+  template:
+    metadata: {labels: {app: notify-leaky}}
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["sh", "-c", "echo 'connecting with password=hunter2'; echo 'fatal: notify-leaky-marker config missing' >&2; exit 1"]
+---
+# Image pull failure raised while the model is stopped.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notify-nomodel
+  namespace: lab
+  labels: {lab-fault: notify-nomodel}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: notify-nomodel}}
+  template:
+    metadata: {labels: {app: notify-nomodel}}
+    spec:
+      containers:
+        - name: app
+          image: busybox:no-such-tag-3333
+          command: ["sleep", "3600"]

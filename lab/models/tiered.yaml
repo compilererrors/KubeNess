@@ -1,0 +1,14 @@
+# Tiered: qwen3:0.6b analyses every incident; qwen3:1.7b takes over when the small
+# answer is invalid or has unsupported claims, and runs troubleshooting. Both stay
+# loaded (~3.5 GB). Build the image with: make model-tiered
+model:
+  name: qwen3:0.6b
+  image: {tag: qwen3-0.6b-1.7b}
+  timeout: 90s   # 1.7B can need ~45 s per analysis when the node CPU is shared
+  numThreads: 4
+  escalation:
+    model: qwen3:1.7b
+    when: [invalid, unsupported, troubleshoot]
+  resources:
+    requests: {cpu: "2", memory: 3Gi}
+    limits: {memory: 4Gi}

@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Incidents</h1>
+<p class="muted">Open incidents first, then recently resolved. Refreshes every 15 seconds.</p>
+<div class="card scroll">
+{% if incidents %}
+<table>
+  <tr><th>Severity</th><th>Workload</th><th>Reason</th><th>State</th><th>First seen</th><th>Last observed</th><th>Notification</th></tr>
+  {% for i in incidents %}
+  <tr class="{{ 'resolved' if not i.is_open }}">
+    <td><span class="badge sev-{{ i.severity }}">{{ i.severity }}</span></td>
+    <td><a href="/incidents/{{ i.id }}">{{ i.workload.namespace }}/{{ i.workload.name }}</a><br><span class="muted">{{ i.workload.kind }} · {{ i.rule_id }}</span></td>
+    <td>{{ i.reason }}</td>
+    {% set mk = marks.get(i.id) %}
+    <td><span class="badge st-{{ i.state.value }}">{{ i.state.value }}</span>{% if i.stale %} <span class="muted">stale</span>{% endif %}
+      {% if mk and mk.acknowledged_at %}<br><span class="muted">acked</span>{% endif %}
+      {% if mk and mk.silenced(now) %}<br><span class="muted">silenced until {{ mk.silenced_until | ts }}</span>{% endif %}</td>
+    <td title="{{ i.first_seen | ts }}">{{ i.first_seen | ago }}</td>
+    <td title="{{ i.last_observed | ts }}">{{ i.last_observed | ago }}</td>
+    {% set n = latest.get(i.id) %}
+    <td>{% if n %}<span class="badge nt-{{ n.status }}" title="{{ n.last_error or '' }}">{{ n.status }}</span><br><span class="muted">{{ n.event }}{% if n.attempts > 1 %} · {{ n.attempts }} attempts{% endif %}</span>{% elif cfg.notifications.enabled %}<span class="muted">none</span>{% else %}<span class="muted">not configured</span>{% endif %}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<p class="muted">No incidents. The observer is watching {{ cfg.access.namespaces | join(", ") }}.</p>
+{% endif %}
+</div>
+{% endblock %}

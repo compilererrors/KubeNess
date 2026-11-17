@@ -1,0 +1,92 @@
+{{- if .Values.networkPolicy.enabled }}
+# Default deny for everything in the release namespace, then explicit flows.
+# A NetworkPolicy object proves nothing on its own: the CNI must enforce it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "kubeness.fullname" . }}-default-deny
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubeness.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "kubeness.observer" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubeness.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "kubeness.observerSelector" . | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  # No ingress from other pods. The UI is reached through kubectl port-forward,
+  # which NetworkPolicy does not restrict; kubelet probes are allowed by the CNI.
+  ingress: []
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    {{- if .Values.model.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "kubeness.modelSelector" . | nindent 14 }}
+      ports:
+        - {protocol: TCP, port: 11434}
+    {{- end }}
+    {{- if and .Values.actions.enabled .Values.executor.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "kubeness.executorSelector" . | nindent 14 }}
+      ports:
+        - {protocol: TCP, port: 8082}
+    {{- end }}
+    {{- if .Values.notifications.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "kubeness.notifierSelector" . | nindent 14 }}
+      ports:
+        - {protocol: TCP, port: 8081}
+    {{- end }}
+    {{- if .Values.networkPolicy.apiServer.cidrs }}
+    - to:
+        {{- range .Values.networkPolicy.apiServer.cidrs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        {{- range .Values.networkPolicy.apiServer.ports }}
+        - {protocol: TCP, port: {{ . }}}
+        {{- end }}
+    {{- end }}
+{{- if .Values.networkPolicy.cilium.enabled }}
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ include "kubeness.observer" . }}-apiserver
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubeness.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      {{- include "kubeness.observerSelector" . | nindent 6 }}
+  egress:
+    - toEntities: [kube-apiserver]
+{{- end }}
+{{- end }}

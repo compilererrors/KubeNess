@@ -1,0 +1,46 @@
+# Faults for the stage 2 diagnose tests.
+#   kubectl --context kind-kubeness apply -f lab/diagnose-faults.yaml
+---
+# Crashes with a clear error, after logging a credential that must be masked.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: leaky-crasher
+  namespace: lab
+  labels: {lab-fault: leaky-crasher}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: leaky-crasher}}
+  template:
+    metadata: {labels: {app: leaky-crasher}}
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              echo "starting worker v2.3"
+              echo "connecting to db with password=hunter2"
+              sleep 3
+              echo "fatal: config file /etc/app/config.yaml not found" >&2
+              exit 1
+---
+# Image pull failure used while the model is stopped.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: missing-tag
+  namespace: lab
+  labels: {lab-fault: missing-tag}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: missing-tag}}
+  template:
+    metadata: {labels: {app: missing-tag}}
+    spec:
+      containers:
+        - name: app
+          image: busybox:no-such-tag-1111
+          command: ["sleep", "3600"]

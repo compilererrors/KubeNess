@@ -1,0 +1,9 @@
+# qwen3:0.6b: the default. ~0.5 GB of weights, about 1 GB in use; 2-5 s per analysis on 4 CPU threads.
+model:
+  name: qwen3:0.6b
+  image: {tag: qwen3-0.6b}
+  timeout: 20s
+  numThreads: 4
+  resources:
+    requests: {cpu: "2", memory: 1Gi}
+    limits: {memory: 2Gi}

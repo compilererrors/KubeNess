@@ -1,0 +1,108 @@
+{{- if .Values.model.enabled }}
+# Local model runtime. No Kubernetes API access, no ServiceAccount token, no
+# cloud credentials and no egress: the model files are baked into the image.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "kubeness.fullname" . }}-model
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubeness.labels" . | nindent 4 }}
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "kubeness.fullname" . }}-model
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubeness.labels" . | nindent 4 }}
+    app.kubernetes.io/component: model
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "kubeness.modelSelector" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "kubeness.modelSelector" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "kubeness.fullname" . }}-model
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: model
+          image: "{{ .Values.model.image.repository }}:{{ .Values.model.image.tag }}"
+          imagePullPolicy: {{ .Values.model.image.pullPolicy }}
+          env:
+            - {name: OLLAMA_HOST, value: "0.0.0.0:11434"}
+            - {name: OLLAMA_MODELS, value: /models}
+            - {name: HOME, value: /tmp}
+            - {name: OLLAMA_NUM_PARALLEL, value: {{ .Values.model.maxConcurrentRequests | quote }}}
+            - {name: OLLAMA_KEEP_ALIVE, value: "30m"}
+          ports:
+            - name: http
+              containerPort: 11434
+          readinessProbe:
+            httpGet: {path: /api/tags, port: http}
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            {{- toYaml .Values.model.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kubeness.fullname" . }}-model
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubeness.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "kubeness.modelSelector" . | nindent 4 }}
+  ports:
+    - name: http
+      port: 11434
+      targetPort: http
+{{- if .Values.networkPolicy.enabled }}
+---
+# Only the observer may call the model. No egress rule: default deny applies.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "kubeness.fullname" . }}-model
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubeness.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "kubeness.modelSelector" . | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "kubeness.observerSelector" . | nindent 14 }}
+      ports:
+        - {protocol: TCP, port: 11434}
+  egress: []
+{{- end }}
+{{- end }}

@@ -1,0 +1,204 @@
+{% extends "base.html" %}
+{% block title %}{{ inc.workload.name }} · KubeNess{% endblock %}
+{% block content %}
+<p><a href="/">← Incidents</a></p>
+<h1>{{ inc.workload.namespace }}/{{ inc.workload.name }}</h1>
+<p>
+  <span class="badge sev-{{ inc.severity }}">{{ inc.severity }}</span>
+  <span class="badge st-{{ inc.state.value }}">{{ inc.state.value }}</span>
+  {% if inc.stale %}<span class="muted">observation stale</span>{% endif %}
+  <span class="muted">· {{ inc.id }} · {{ inc.workload.kind }} · rule {{ inc.rule_id }}</span>
+</p>
+
+<div class="card actions">
+  {% if marks.acknowledged_at %}
+  <span>Acknowledged {{ marks.acknowledged_at | ts }}</span>
+  <form method="post" action="/incidents/{{ inc.id }}/unack"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button>Remove acknowledgement</button></form>
+  {% else %}
+  <form method="post" action="/incidents/{{ inc.id }}/ack"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button>Acknowledge</button></form>
+  {% endif %}
+  {% if marks.silenced(now) %}
+  <span>Notifications silenced until {{ marks.silenced_until | ts }}</span>
+  <form method="post" action="/incidents/{{ inc.id }}/unsilence"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button>Remove silence</button></form>
+  {% else %}
+  <form method="post" action="/incidents/{{ inc.id }}/silence"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <select name="duration" aria-label="Silence duration">{% for d in durations %}<option value="{{ d }}"{% if d == "1h" %} selected{% endif %}>{{ d }}</option>{% endfor %}</select>
+    <button>Silence notifications</button></form>
+  {% endif %}
+  <span class="muted">Acknowledge means someone has seen it. Silence pauses notifications, not detection. Neither marks the workload as recovered.</span>
+</div>
+
+{% macro refs(c) %}<span class="refs">{% for r in c.evidence_refs %}<a href="#{{ r }}">{{ r }}</a>{% endfor %}</span>{% endmacro %}
+<h2>Summary</h2>
+<div class="card">
+  {% if analysis %}
+  {% set a = analysis.payload %}
+  <p><strong>{{ a.summary }}</strong></p>
+  <div class="label">Observed</div>
+  <ul class="claims">{% for c in a.observed_facts %}<li>{{ c.text }}{{ refs(c) }}</li>{% endfor %}</ul>
+  {% if a.possible_causes %}<div class="label">Possible causes (hypotheses)</div>
+  <ul class="claims">{% for c in a.possible_causes %}<li class="hypo">{{ c.text }}{{ refs(c) }}</li>{% endfor %}</ul>{% endif %}
+  {% if a.next_checks %}<div class="label">Next checks</div>
+  <ul class="claims">{% for c in a.next_checks %}<li>{{ c }}</li>{% endfor %}</ul>{% endif %}
+  {% if a.missing_information %}<div class="label">Missing information</div>
+  <ul class="claims">{% for c in a.missing_information %}<li>{{ c }}</li>{% endfor %}</ul>{% endif %}
+  <p class="muted">Analysis: {{ analysis.source }}{% if analysis.model %} ({{ analysis.model }}, {{ analysis.latency_ms }} ms){% endif %} · {{ analysis.created_at | ts }}
+    {% if analysis.dropped %} · {{ analysis.dropped | length }} unsupported claim(s) removed{% endif %}</p>
+  {% if failed %}<p class="muted">Model analysis unavailable: {{ failed.error }}. Showing the template analysis.</p>{% endif %}
+  {% else %}
+  <p><strong>Observed:</strong> {{ inc.reason }}</p>
+  <p class="muted">The analysis is produced when the incident fires.</p>
+  {% endif %}
+  <p class="muted">
+    First seen {{ inc.first_seen | ts }} · last observed {{ inc.last_observed | ts }}
+    {% if inc.recovering_since %} · healthy since {{ inc.recovering_since | ts }}{% endif %}
+    {% if inc.resolved_at %} · resolved {{ inc.resolved_at | ts }}{% endif %}
+    {% if inc.recurrence_count %} · recurred {{ inc.recurrence_count }}×{% endif %}
+    {% if inc.flap_count %} · relapsed {{ inc.flap_count }}× during recovery{% endif %}
+  </p>
+  {% if inc.pods %}<p class="muted">Pods: {{ inc.pods | join(", ") }}</p>{% endif %}
+</div>
+
+{% if can_act or actions %}
+<h2 id="actions">Actions</h2>
+<div class="card">
+  {% if can_act %}{% for a in allowed_actions %}
+  <form method="post" action="/incidents/{{ inc.id }}/actions/{{ a }}" class="ask" onsubmit="return confirm('Run {{ a }} on Deployment {{ inc.workload.namespace }}/{{ inc.workload.name }}?')">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button>Approve {{ a }} of {{ inc.workload.namespace }}/{{ inc.workload.name }}</button>
+  </form>
+  {% endfor %}
+  <p class="muted">The executor pod runs the action with its own writer identity; the result is verified with the next observations.</p>
+  {% endif %}
+  {% if actions %}<table>
+    <tr><th>Action</th><th>Status</th><th>Requested</th><th>Result</th></tr>
+    {% for a in actions %}<tr><td>{{ a.action }}<br><span class="muted">{{ a.id }}</span></td><td>{{ a.status }}</td><td class="muted">{{ a.requested_at | ts }}</td><td class="muted">{{ a.result or "" }}{% if a.verified_at %} · verified {{ a.verified_at | ts }}{% endif %}</td></tr>{% endfor %}
+  </table>{% endif %}
+</div>
+{% endif %}
+
+{% if can_troubleshoot or investigations %}
+<h2 id="troubleshoot">Troubleshooting (experimental)</h2>
+<div class="card">
+  {% if can_troubleshoot %}
+  <form method="post" action="/incidents/{{ inc.id }}/troubleshoot" class="ask">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button>Troubleshoot (experimental)</button>
+  </form>
+  <p class="muted">The model picks read-only tools step by step (logs, events, describe, rollout history, history) inside this workload and the {{ silo.profile if silo else "" }} profile of silo {{ silo.name if silo else "-" }}. Findings must cite evidence. Reload to follow progress.</p>
+  {% endif %}
+  {% for i in investigations %}
+  <div class="qa">
+    <div class="label">{{ i.id }} · {{ i.status }} · {{ i.model }}{% if i.think %} · thinking{% endif %} · {{ i.started_at | ts }}</div>
+    <ol class="claims">{% for s in i.steps %}
+      <li><strong>{{ s.tool }}</strong> {{ s.args | tojson }} — {{ s.status }}{% if s.ref %} <span class="refs"><a href="#{{ s.ref }}">{{ s.ref }}</a></span>{% endif %}
+        {% if s.note %}<br><span class="muted">{{ s.note }}</span>{% endif %}
+        {% if s.status != "ok" %}<br><span class="muted">{{ s.result }}</span>{% endif %}
+        {% if s.thinking %}<details><summary class="muted">model reasoning (unverified)</summary><pre>{{ s.thinking }}</pre></details>{% endif %}</li>
+    {% endfor %}</ol>
+    {% if i.conclusion.summary %}<p><strong>{{ i.conclusion.summary }}</strong></p>{% endif %}
+    {% if i.conclusion.findings %}<ul class="claims">{% for f in i.conclusion.findings %}<li>{{ f.text }}{{ refs(f) }}</li>{% endfor %}</ul>{% endif %}
+    {% if i.conclusion.fix %}{% set fx = i.conclusion.fix %}
+    <div class="label">Proposed fix (model, experimental)</div>
+    <p>{{ fx.action }} {{ fx.params | tojson }}: {{ fx.reason }}{{ refs(fx) }}</p>
+    {% if can_act and fx.action in allowed_actions %}
+    <form method="post" action="/incidents/{{ inc.id }}/actions/{{ fx.action }}" class="ask" onsubmit="return confirm('Run {{ fx.action }} on {{ inc.workload.namespace }}/{{ inc.workload.name }}?')">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      {% if fx.params.revision %}<input type="hidden" name="revision" value="{{ fx.params.revision }}">{% endif %}
+      <button>Approve {{ fx.action }}</button>
+    </form>
+    {% else %}<p class="muted">Recommendation only: actions need a remediate silo.</p>{% endif %}
+    {% endif %}
+    {% if i.error %}<p class="muted">{{ i.error }}</p>{% endif %}
+    {% if i.conclusion.dropped %}<p class="muted">{{ i.conclusion.dropped | length }} unsupported statement(s) removed</p>{% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% if can_ask %}
+<h2 id="ask">Ask about this incident</h2>
+<div class="card">
+  <form method="post" action="/incidents/{{ inc.id }}/ask" class="ask">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <select name="example" aria-label="Example question">{% for q in examples %}<option>{{ q }}</option>{% endfor %}</select>
+    <input name="question" maxlength="300" placeholder="or ask your own question" aria-label="Your question">
+    <button>Ask</button>
+  </form>
+  <p class="muted">Answers use only this incident's stored evidence. Every statement links to its evidence; statements without evidence are removed.</p>
+  {% for q in questions %}
+  <div class="qa">
+    <div class="label">{{ q.question }}</div>
+    <p>{{ q.answer }}</p>
+    {% if q.claims %}<ul class="claims">{% for c in q.claims %}<li>{{ c.text }}<span class="refs">{% for r in c.evidence_refs %}<a href="#{{ r }}">{{ r }}</a>{% endfor %}</span></li>{% endfor %}</ul>{% endif %}
+    <p class="muted">{{ q.source }}{% if q.latency_ms %} · {{ q.latency_ms }} ms{% endif %} · {{ q.at | ts }}{% if q.dropped %} · {{ q.dropped | length }} unsupported statement(s) removed{% endif %}</p>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% if comparison %}
+<h2>Model comparison</h2>
+<div class="card scroll compare">
+  {% for r in comparison %}
+  <div class="col">
+    <div class="label">{{ r.model }} · {{ "primary" if r.source == "model" else "shadow" }} · {{ r.status }}{% if r.latency_ms %} · {{ r.latency_ms }} ms{% endif %}</div>
+    {% if r.payload %}
+    <p>{{ r.payload.summary }}</p>
+    <ul class="claims">{% for c in r.payload.possible_causes %}<li class="hypo">{{ c.text }}{{ refs(c) }}</li>{% endfor %}</ul>
+    <ul class="claims">{% for c in r.payload.next_checks %}<li>{{ c }}</li>{% endfor %}</ul>
+    {% else %}<p class="muted">{{ r.error }}</p>{% endif %}
+    {% if r.dropped %}<p class="muted">{{ r.dropped | length }} unsupported claim(s) removed</p>{% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+<h2>Evidence</h2>
+<div class="card scroll">
+{% if evidence %}
+<table>
+  <tr><th>Ref</th><th>Kind</th><th>Summary</th><th>Collected</th></tr>
+  {% for e in evidence %}
+  <tr id="{{ e.ref }}">
+    <td>{{ e.ref }}</td><td>{{ e.kind }}</td>
+    <td>{{ e.summary }}{% if e.kind == "event" and e.payload.message %}<pre>{{ e.payload.message }}</pre>{% elif e.kind == "log" %}<pre>{{ e.payload.text }}</pre>{% elif e.kind == "rule" %}<pre>{{ e.payload | tojson(indent=2) }}</pre>{% endif %}</td>
+    <td class="muted">{{ e.collected_at | ts }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<p class="muted">Evidence is collected when the incident fires.</p>
+{% endif %}
+</div>
+
+<h2>Notifications</h2>
+<div class="card scroll">
+{% if notifications %}
+<table>
+  <tr><th>Id</th><th>Event</th><th>Status</th><th>Attempts</th><th>Queued</th><th>Accepted</th></tr>
+  {% for n in notifications %}
+  <tr>
+    <td class="muted">{{ n.id }}</td><td>{{ n.event }}</td>
+    <td><span class="badge nt-{{ n.status }}">{{ n.status }}</span>{% if n.last_error %}<br><span class="muted">{{ n.last_error }}</span>{% endif %}</td>
+    <td>{{ n.attempts }}</td><td class="muted">{{ n.created_at | ts }}</td><td class="muted">{{ n.accepted_at | ts }}</td>
+  </tr>
+  {% endfor %}
+</table>
+<p class="muted">provider_accepted means the provider accepted the call; it does not prove that the message was read.</p>
+{% elif cfg.notifications.enabled %}
+<p class="muted">No notifications for this incident.</p>
+{% else %}
+<p class="muted">Notifications are not configured.</p>
+{% endif %}
+</div>
+
+<h2>Activity</h2>
+<div class="card scroll">
+<table>
+  {% for a in activity %}
+  <tr><td class="muted" style="white-space:nowrap">{{ a.at | ts }}</td><td>{{ a.kind }}</td><td>{{ a.message }}</td></tr>
+  {% endfor %}
+</table>
+</div>
+{% endblock %}

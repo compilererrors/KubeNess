@@ -1,0 +1,17 @@
+# Fault for the stage 4 (Inspect) e2e suite: acknowledge and silence.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inspect-silenced
+  namespace: lab
+  labels: {lab-fault: inspect-silenced}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: inspect-silenced}}
+  template:
+    metadata: {labels: {app: inspect-silenced}}
+    spec:
+      containers:
+        - name: app
+          image: busybox:no-such-tag-4444
+          command: ["sleep", "3600"]

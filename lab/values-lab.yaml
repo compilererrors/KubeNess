@@ -1,0 +1,43 @@
+# Lab install: Cilium, local model, Service evidence and notifications to the in-cluster sink.
+access:
+  readServices: true
+  silos:
+    - {name: lab, namespaces: [lab], profile: remediate}
+    - {name: lab-observe, namespaces: [lab-observe], profile: observe}
+# Stage 6: the executor with restart-deployment, approved in the UI.
+actions:
+  enabled: true
+  allowed: [restart-deployment, rollback-deployment]
+experimental:
+  troubleshoot:
+    enabled: true
+    maxSteps: 4
+    think: true
+    stepTimeout: 90s
+    proposeFixes: true
+executor:
+  enabled: true
+networkPolicy:
+  cilium:
+    enabled: true
+model:
+  enabled: true
+notifications:
+  enabled: true
+  provider: webhook
+  # Short delays so the e2e suite sees retries within minutes.
+  backoff: 5s
+  backoffMax: 30s
+  heartbeatInterval: 30s
+  digestInterval: 2m
+  # The lab destination is the sink; nothing else is reachable.
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: lab-sink
+          podSelector:
+            matchLabels:
+              app: sink
+      ports:
+        - {protocol: TCP, port: 8080}

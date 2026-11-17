@@ -1,0 +1,59 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kubeness.observer" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubeness.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    cluster: {{ .Values.cluster | quote }}
+    access:
+      namespaces: {{ include "kubeness.watchedNamespaces" . }}
+      {{- include "kubeness.silos" . | nindent 6 }}
+      readLogs: {{ .Values.access.readLogs }}
+      readNodes: {{ .Values.access.readNodes }}
+      readServices: {{ .Values.access.readServices }}
+    collection:
+      {{- toYaml .Values.collection | nindent 6 }}
+    alarms:
+      {{- toYaml .Values.alarms | nindent 6 }}
+    observer:
+      evaluationInterval: {{ .Values.observer.evaluationInterval }}
+      resync: {{ .Values.observer.resync }}
+      watchTimeout: {{ .Values.observer.watchTimeout }}
+      freshnessBudget: {{ .Values.observer.freshnessBudget }}
+      dataDir: /data
+    model:
+      enabled: {{ .Values.model.enabled }}
+      url: http://{{ include "kubeness.fullname" . }}-model:11434
+      name: {{ .Values.model.name | quote }}
+      timeout: {{ .Values.model.timeout }}
+      think: {{ .Values.model.think }}
+      numThreads: {{ .Values.model.numThreads }}
+      maxConcurrentRequests: {{ .Values.model.maxConcurrentRequests }}
+      queueSize: {{ .Values.model.queueSize }}
+      compare: {{ .Values.model.compare | toJson }}
+      escalation:
+        {{- toYaml .Values.model.escalation | nindent 8 }}
+    notifications:
+      enabled: {{ .Values.notifications.enabled }}
+      url: http://{{ include "kubeness.notifier" . }}:8081
+      tokenFile: /var/run/kubeness/notifier/token
+      timeout: {{ .Values.notifications.timeout }}
+      maxAttempts: {{ .Values.notifications.maxAttempts }}
+      backoff: {{ .Values.notifications.backoff }}
+      backoffMax: {{ .Values.notifications.backoffMax }}
+      heartbeatInterval: {{ .Values.notifications.heartbeatInterval }}
+      digestInterval: {{ .Values.notifications.digestInterval }}
+    actions:
+      enabled: {{ and .Values.actions.enabled .Values.executor.enabled }}
+      url: http://{{ include "kubeness.fullname" . }}-executor:8082
+      tokenFile: /var/run/kubeness/executor/token
+      allowed: {{ .Values.actions.allowed | toJson }}
+    experimental:
+      troubleshoot:
+        {{- toYaml .Values.experimental.troubleshoot | nindent 8 }}
+    ui:
+      port: 8080
+      allowedHosts: {{ .Values.ui.allowedHosts | toJson }}
