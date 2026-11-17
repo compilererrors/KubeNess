@@ -1,45 +1,47 @@
 # KubeNess
 
+English | [Svenska](README.sv.md)
+
 Watch. Diagnose. Notify.
 
-KubeNess är en lokal diagnostic service för Kubernetes som arbetar i bakgrunden. Deterministiska regler upptäcker bestående problem, observern samlar evidence, en valfri lokal modell skriver analys, och notifications skickas via en egen notifier. Ett litet web interface visar incidents, evidence och åtgärder.
+KubeNess is a local diagnostic service for Kubernetes that works in the background. Deterministic rules detect persistent problems, the observer collects evidence, an optional local model writes an analysis, and notifications are sent through a separate notifier. A small web interface shows incidents, evidence and actions.
 
-## Komponenter och gränser
+## Components and boundaries
 
-| Komponent | Kubernetes-åtkomst | Övrigt |
+| Component | Kubernetes access | Other |
 |---|---|---|
-| Observer | Reader-Role per bevakat namespace (get/list/watch, pods/log enligt silons profil) | Regler, incident store (SQLite på egen volume), UI och JSON API |
-| Model (valfri) | Ingen, ingen ServiceAccount-token | Ollama med inbakade modeller, ingen egress |
-| Notifier (valfri) | Ingen, ingen ServiceAccount-token | Ensam om destination-Secret; tar emot ett fast format med delad token |
-| Executor (valfri) | Writer-Role i remediate-silos: get/patch deployments, get/list replicasets | Kör godkända actions med delad token |
+| Observer | Reader Role per watched namespace (get/list/watch, pods/log according to the silo's profile) | Rules, incident store (SQLite on its own volume), UI and JSON API |
+| Model (optional) | None, no ServiceAccount token | Ollama with built-in models, no egress |
+| Notifier (optional) | None, no ServiceAccount token | Only component holding the destination Secret; accepts a fixed format with a shared token |
+| Executor (optional) | Writer Role in remediate silos: get/patch deployments, get/list replicasets | Runs approved actions with a shared token |
 
-Alla pods kör non-root med read-only rootfs och utan capabilities. NetworkPolicy med default-deny släpper bara de flöden tabellen kräver. Observern kör en replika med `strategy: Recreate`.
+All pods run as non-root with a read-only root filesystem and no capabilities. A default-deny NetworkPolicy allows only the flows listed above. The observer runs a single replica with `strategy: Recreate`.
 
-## Funktioner
+## Features
 
-- **Regler:** repeated restart (även CrashLoopBackOff som kvarstår), image pull failure, readiness failure (även `ProgressDeadlineExceeded`), scheduling failure, OOM termination och observer degraded (insamlingen överskrider freshness-budgeten).
-- **Lifecycle:** pending → firing → recovering → resolved, med recovery window, reopen window, flap-skydd och inhibition.
-- **Evidence:** regelns fakta, relaterade events, begränsade loggutdrag och (opt-in) Services, EndpointSlices och nodkapacitet. Allt maskas innan det sparas eller skickas.
-- **Analys:** deterministiska runbooks ger template-analys med evidence-referenser. En lokal modell kan berika den; påståenden utan giltig referens tas bort.
-- **Notifications:** outbox med retries och backoff, firing/reopened/repeat/escalated/resolved, info-digest, heartbeat till en dead man's switch. Providers: webhook, ntfy och AWS SNS.
-- **UI:** incident list och detail via port-forward, acknowledge och silence (CSRF och Origin-kontroll), Ask about this incident, modellöversikt under `/models`.
-- **Actions (valfritt):** `restart-deployment` och `rollback-deployment`, godkända i UI:t, utförda av executorn, med auditlogg och verifiering.
-- **Retention:** lösta incidents och skickade digests äldre än `observer.retention` (14 d) rensas.
+- **Rules:** repeated restart (including a persisting CrashLoopBackOff), image pull failure, readiness failure (including `ProgressDeadlineExceeded`), scheduling failure, OOM termination and observer degraded (collection exceeds the freshness budget).
+- **Lifecycle:** pending → firing → recovering → resolved, with a recovery window, reopen window, flap protection and inhibition.
+- **Evidence:** the rule's facts, related events, bounded log excerpts and (opt-in) Services, EndpointSlices and node capacity. Everything is masked before it is stored or sent.
+- **Analysis:** deterministic runbooks produce a template analysis with evidence references. A local model can enrich it; claims without a valid reference are removed.
+- **Notifications:** outbox with retries and backoff, firing/reopened/repeat/escalated/resolved, info digest, heartbeat to a dead man's switch. Providers: webhook, ntfy and AWS SNS.
+- **UI:** incident list and detail through port-forward, acknowledge and silence (CSRF and Origin checks), Ask about this incident, model overview at `/models`.
+- **Actions (optional):** `restart-deployment` and `rollback-deployment`, approved in the UI, run by the executor, with an audit log and verification.
+- **Retention:** resolved incidents and sent digests older than `observer.retention` (14 d) are deleted.
 
-## Konfiguration
+## Configuration
 
-Chartet `charts/kubeness` renderar observerns config från `values.yaml`. Viktiga delar:
+The chart `charts/kubeness` renders the observer's config from `values.yaml`. The main parts:
 
-### Access profiles och silos
+### Access profiles and silos
 
-En silo är en grupp namespaces med en profil:
+A silo is a group of namespaces with one profile:
 
-| Profil | Ger |
+| Profile | Grants |
 |---|---|
-| `observe` | status, events och specs |
+| `observe` | status, events and specs |
 | `investigate` | + container logs |
-| `recommend` | + modellen får föreslå fixar |
-| `remediate` | + godkända actions via executorn |
+| `recommend` | + the model may propose fixes |
+| `remediate` | + approved actions through the executor |
 
 ```yaml
 access:
@@ -48,101 +50,101 @@ access:
     - {name: shop, namespaces: [shop, shop-api], profile: observe}
 ```
 
-Chartet skapar RBAC per namespace efter profilen, och appen kontrollerar samma profil. Utan `access.silos` blir `access.namespaces` en silo med `access.profile` (default `investigate`). `readSecrets` och `exec` stöds inte och får installationen att misslyckas.
+The chart creates RBAC per namespace from the profile, and the application enforces the same profile. Without `access.silos`, `access.namespaces` becomes one silo with `access.profile` (default `investigate`). `readSecrets` and `exec` are not supported and make the installation fail.
 
-### Modeller
+### Models
 
-Template-analysen fungerar utan modell. Med `model.enabled: true` körs en lokal modell i model-podden. Profiler i `lab/models/` sätter modell, image, minne och timeout:
+The template analysis works without a model. With `model.enabled: true` a local model runs in the model pod. Profiles in `lab/models/` set the model, image, memory and timeout:
 
-| Profil | Modell | Minne i bruk (ungefär) |
+| Profile | Model | Memory in use (approx.) |
 |---|---|---|
 | `0.6b` | qwen3:0.6b | 1 GB |
-| `1.7b` | qwen3:1.7b | 2,5 GB |
-| `4b` | qwen3:4b | 4,5 GB |
-| `tiered` | 0.6b för alla incidents, 1.7b enligt regel | 3,5 GB |
+| `1.7b` | qwen3:1.7b | 2.5 GB |
+| `4b` | qwen3:4b | 4.5 GB |
+| `tiered` | 0.6b for every incident, 1.7b by rule | 3.5 GB |
 
 ```bash
-make model SIZE=1.7b     # bygger model-image med den modellen och uppgraderar releasen
-make model-tiered        # trappa: 0.6b + 1.7b
+make model SIZE=1.7b     # builds a model image with that model and upgrades the release
+make model-tiered        # tiered: 0.6b + 1.7b
 ```
 
-- `model.escalation` lämnar över till en större modell enligt regel (`when`: `invalid`, `unsupported`, `ungrounded`, `critical`, `recurring`, `troubleshoot`), aldrig efter den lilla modellens egen bedömning.
-- `model.compare` kör skuggmodeller på samma incidents för jämförelse; incidentens analys är alltid den primära modellens.
-- `model.numThreads` ska inte överstiga model-poddens CPU-request; llama.cpp använder annars en tråd per synlig CPU, vilket blir mycket långsamt på en delad nod.
+- `model.escalation` hands over to a larger model by rule (`when`: `invalid`, `unsupported`, `ungrounded`, `critical`, `recurring`, `troubleshoot`), never by the small model's own judgement.
+- `model.compare` runs shadow models on the same incidents for comparison; the incident's analysis is always the primary model's.
+- `model.numThreads` should not exceed the model pod's CPU request; otherwise llama.cpp uses one thread per visible CPU, which is very slow on a shared node.
 
-### Experimentell felsökning
+### Experimental troubleshooting
 
-`experimental.troubleshoot` (av som default) ger en knapp på incidenten. Modellen väljer ett läsverktyg per steg (logs, events, describe utan env-värden, rollout-historik, tidigare incidents); observern kör verktyget inom incidentens workload och silons profil och sparar resultatet som evidence. Sista steget kan bara avsluta och upprepade anrop avvisas. `think` slår på modellens resonemang. Med `proposeFixes` får slutsatsen föreslå en tillåten action, som bara körs efter godkännande i en remediate-silo.
+`experimental.troubleshoot` (off by default) adds a button to the incident. The model picks one read-only tool per step (logs, events, describe without env values, rollout history, earlier incidents); the observer runs the tool within the incident's workload and the silo's profile and stores the result as evidence. The last step can only finish, and repeated calls are refused. `think` turns on the model's reasoning. With `proposeFixes` the conclusion may propose an allowed action, which only runs after approval in a remediate silo.
 
 ### Notifications
 
-Destinationen ligger i en Secret som skapas utanför chartet och bara monteras i notifiern:
+The destination is kept in a Secret created outside the chart and mounted only in the notifier:
 
 ```bash
 kubectl -n kubeness create secret generic kubeness-notifications \
   --from-literal=url=https://ntfy.sh/<topic> [--from-literal=token=...] [--from-literal=heartbeatUrl=...]
 ```
 
-Sätt `notifications.provider` till `webhook`, `ntfy` eller `sns` (för SNS: `url` är topic-ARN, plus `accessKeyId` och `secretAccessKey` med bara `sns:Publish`). `notifications.egress` styr notifierns egress.
+Set `notifications.provider` to `webhook`, `ntfy` or `sns` (for SNS: `url` is the topic ARN, plus `accessKeyId` and `secretAccessKey` with only `sns:Publish`). `notifications.egress` controls the notifier's egress.
 
-## Säkerhet mot fel kluster
+## Protection against the wrong cluster
 
-Observern startar aldrig mot den aktuella kubeconfig-kontexten. Utanför ett kluster måste `kubernetes.context` anges uttryckligen. Alla Makefile-mål använder `--context kind-kubeness` / `--kube-context kind-kubeness`.
+The observer never starts against the current kubeconfig context. Outside a cluster, `kubernetes.context` must be set explicitly. All Makefile targets use `--context kind-kubeness` / `--kube-context kind-kubeness`.
 
-## Utveckling
+## Development
 
 ```bash
 python3.12 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-make test              # ruff och unit-tester, inklusive simulerade KPI-benchmarks
-make kpi               # bara KPI-benchmarks
+make test              # ruff and unit tests, including simulated KPI benchmarks
+make kpi               # KPI benchmarks only
 ```
 
-Kör observern lokalt mot labbklustret:
+Run the observer locally against the lab cluster:
 
 ```bash
 .venv/bin/python -m kubeness --config config/example.yaml
 ```
 
-KPI-benchmarks (`tests/kpi/` och KPI-anrop i e2e-sviten) har mätbara mål och skrivs ut som en tabell sist i pytest-utskriften, eller som JSON med `KUBENESS_KPI_REPORT=<fil>`. Tidsmätningar mäts om vid en miss och markeras NOISY när maskinen är överbelastad.
+KPI benchmarks (`tests/kpi/` and KPI calls in the e2e suite) have measurable targets and are printed as a table at the end of the pytest output, or as JSON with `KUBENESS_KPI_REPORT=<file>`. Timings are measured again on a miss and marked NOISY when the machine is overloaded.
 
-## Labb
+## Lab
 
-Kräver Docker, kind, kubectl och Helm.
+Requires Docker, kind, kubectl and Helm.
 
 ```bash
-make cluster        # kind utan default CNI
-make cilium         # Cilium verkställer NetworkPolicy
-make image          # observer-image, laddas in i kind
-make model-image    # CPU-only Ollama med qwen3:0.6b inbakad
-make sink           # webhook-mottagare i namespace lab-sink
-make install        # Helm release med lab/values-lab.yaml
-make faults         # kända fel och en frisk kontroll i namespace lab
+make cluster        # kind without the default CNI
+make cilium         # Cilium enforces NetworkPolicy
+make image          # observer image, loaded into kind
+make model-image    # CPU-only Ollama with qwen3:0.6b built in
+make sink           # webhook receiver in namespace lab-sink
+make install        # Helm release with lab/values-lab.yaml
+make faults         # known faults and a healthy control in namespace lab
 make ui             # http://127.0.0.1:8080
-make verify         # alla negativa kontroller (RBAC, nätverk, tokens, hemligheter)
-make e2e            # bygger om, deployar och kör e2e-sviten mot kind
-make model-compare  # template-only mot modellerna i model-podden
+make verify         # all negative checks (RBAC, network, tokens, secrets)
+make e2e            # rebuilds, deploys and runs the e2e suite against kind
+make model-compare  # template-only against the models in the model pod
 ```
 
-`make install` och `make e2e` tar `MODEL_PROFILE=<profil>` för att behålla en modellprofil, t.ex. `make e2e MODEL_PROFILE=tiered`.
+`make install` and `make e2e` take `MODEL_PROFILE=<profile>` to keep a model profile, e.g. `make e2e MODEL_PROFILE=tiered`.
 
-Utan Cilium behöver chartet API-serverns adress för egress: `make api-server-cidr` och sedan `--set networkPolicy.apiServer.cidrs={<adress>/32}`.
+Without Cilium the chart needs the API server's address for egress: `make api-server-cidr` and then `--set networkPolicy.apiServer.cidrs={<address>/32}`.
 
-### E2E-sviter
+### E2E suites
 
-| Fil | Verifierar |
+| File | Verifies |
 |---|---|
-| `test_stage1_observe.py` | kända fel ger rätt incidents, RBAC, nätverksisolering, monitoring utan UI, omstart |
-| `test_stage2_diagnose.py` | maskade loggar, modellanalys med giltiga referenser, modell nere |
-| `test_stage2c_tiered.py` | trappan: liten modell först, överlämning enligt loggad regel |
-| `test_stage3_notify.py` | notifications, retries vid avbrott, inga hemligheter, notifier-isolering |
-| `test_stage3b_degraded.py` | förlorade rättigheter ger observerDegraded och recovery |
-| `test_stage4_inspect.py` | acknowledge och silence med CSRF |
-| `test_stage4b_rules.py` | scheduling, OOM, Service-evidence, digest |
-| `test_stage5_harden.py` | inga läckor via API:t, token-rotation |
-| `test_stage6_act.py` | executor-behörigheter per silo, restart, rollback, felsökning |
+| `test_stage1_observe.py` | known faults give the right incidents, RBAC, network isolation, monitoring without the UI, restart |
+| `test_stage2_diagnose.py` | masked logs, model analysis with valid references, model down |
+| `test_stage2c_tiered.py` | tiered models: small model first, handover by a logged rule |
+| `test_stage3_notify.py` | notifications, retries during outages, no secrets, notifier isolation |
+| `test_stage3b_degraded.py` | lost permissions give observerDegraded and recovery |
+| `test_stage4_inspect.py` | acknowledge and silence with CSRF |
+| `test_stage4b_rules.py` | scheduling, OOM, Service evidence, digest |
+| `test_stage5_harden.py` | no leaks through the API, token rotation |
+| `test_stage6_act.py` | executor permissions per silo, restart, rollback, troubleshooting |
 
-## Kända begränsningar
+## Known limitations
 
-- Ollama har ingen egen autentisering; model-podden skyddas av NetworkPolicy (bara observern når den).
-- Utan FQDN-policy är notifierns egress HTTPS till godtyckliga adresser; begränsa `notifications.egress` eller använd en egress proxy.
-- Små modeller är svaga på felsökning i flera steg och kan föreslå fel fix; därför kräver alla actions godkännande.
+- Ollama has no authentication of its own; the model pod is protected by NetworkPolicy (only the observer reaches it).
+- Without an FQDN policy the notifier's egress is HTTPS to any address; restrict `notifications.egress` or use an egress proxy.
+- Small models are weak at multi-step troubleshooting and may propose the wrong fix; that is why every action requires approval.
