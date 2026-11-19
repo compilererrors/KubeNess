@@ -78,11 +78,18 @@ class Engine:
             except Exception as e:
                 # One rule tripping over an object must not stop the others. Its own
                 # incidents are left as they are until it evaluates again.
-                log.exception("rule %s failed", rule.rule_id)
+                error = f"{type(e).__name__}: {str(e)[:200]}"
+                if self.rule_errors.get(rule.rule_id) != error:
+                    # The traceback once per new error; a rule failing on every tick
+                    # would otherwise bury the log.
+                    log.exception("rule %s failed", rule.rule_id)
+                else:
+                    log.debug("rule %s still failing: %s", rule.rule_id, error)
                 failed.add(rule.rule_id)
-                self.rule_errors[rule.rule_id] = f"{type(e).__name__}: {str(e)[:200]}"
+                self.rule_errors[rule.rule_id] = error
                 continue
-            self.rule_errors.pop(rule.rule_id, None)
+            if self.rule_errors.pop(rule.rule_id, None) is not None:
+                log.info("rule %s evaluates again", rule.rule_id)
             for ev in found:
                 evals[fingerprint(snapshot.cluster, ev.workload, ev.rule_id)] = ev
         self._inhibit(evals)

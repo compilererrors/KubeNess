@@ -5,14 +5,29 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <noscript><meta http-equiv="refresh" content="15"></noscript>
 <script>
-  // Reload every 15 s, but not while a form field has focus or holds unsent text:
-  // a plain meta refresh threw a half-written question away.
+  // Reload every 15 s, but not while someone types or a form holds an unsent change:
+  // a plain meta refresh threw a half-written question away. A field counts as changed
+  // when it differs from what the page was served with, whatever its type; focus alone
+  // only holds the reload in a field that takes typing, so a chosen select still reloads.
+  var KEEP = /^(hidden|submit|button|reset|image)$/;
+  function changed(f) {
+    if (f.tagName === "SELECT") {
+      // Without a `selected` attribute the browser picks the first option.
+      var served = 0;
+      for (var i = 0; i < f.options.length; i++) if (f.options[i].defaultSelected) served = i;
+      return f.selectedIndex !== served;
+    }
+    if (f.type === "checkbox" || f.type === "radio") return f.checked !== f.defaultChecked;
+    return f.value !== f.defaultValue;
+  }
+  function typing(el) {
+    return el && (el.tagName === "TEXTAREA" || (el.tagName === "INPUT" &&
+      !KEEP.test(el.type) && el.type !== "checkbox" && el.type !== "radio"));
+  }
   setInterval(function () {
-    var el = document.activeElement;
-    var editing = el && /^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName);
-    var fields = document.querySelectorAll("input:not([type]), input[type=text], textarea");
-    var draft = Array.prototype.some.call(fields, function (f) { return f.value !== ""; });
-    if (!editing && !draft) location.reload();
+    var fields = Array.prototype.filter.call(document.querySelectorAll("input, select, textarea"),
+      function (f) { return !KEEP.test(f.type); });
+    if (!typing(document.activeElement) && !fields.some(changed)) location.reload();
   }, 15000);
 </script>
 <title>{% block title %}KubeNess{% endblock %}</title>

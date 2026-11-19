@@ -73,13 +73,20 @@ def test_rule_facts_are_masked_before_they_are_stored():
     assert secret not in everything
 
 
-def test_the_ui_binds_loopback_outside_a_cluster(monkeypatch):
+def test_the_ui_binds_loopback_outside_a_cluster(monkeypatch, tmp_path):
+    from kubeness import __main__ as main
     from kubeness.__main__ import bind_host
     from kubeness.config import Config
 
     monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+    monkeypatch.setattr(main, "CONTAINER_MARKERS", (str(tmp_path / "absent"),))
     assert bind_host(Config()) == "127.0.0.1"
     assert bind_host(Config.model_validate({"ui": {"host": "0.0.0.0"}})) == "0.0.0.0"
+    marker = tmp_path / ".dockerenv"
+    marker.touch()
+    monkeypatch.setattr(main, "CONTAINER_MARKERS", (str(marker),))
+    assert bind_host(Config()) == "0.0.0.0", "a published container port reaches the UI"
+    monkeypatch.setattr(main, "CONTAINER_MARKERS", (str(tmp_path / "absent"),))
     monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.96.0.1")
     assert bind_host(Config()) == "0.0.0.0", "kubelet probes reach the pod by its IP"
     assert bind_host(Config.model_validate({"ui": {"host": "127.0.0.1"}})) == "127.0.0.1"

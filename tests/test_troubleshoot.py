@@ -82,6 +82,11 @@ GOOD = [
 ]
 
 
+def next_ref_number(store, inc) -> int:
+    """The number the store gives the next evidence item of the incident."""
+    return max((int(e.ref[1:]) for e in store.evidence(inc.id)), default=0) + 1
+
+
 def resolve_refs(steps, store, inc):
     """The scripted model cites evidence created during the run; fill in their refs."""
     return steps
@@ -89,7 +94,7 @@ def resolve_refs(steps, store, inc):
 
 def test_a_grounded_investigation_with_thinking_and_a_fix_proposal():
     cfg, store, inc, model, ts, _ = setup([])
-    n0 = store.next_evidence_index(inc.id)
+    n0 = next_ref_number(store, inc)
     steps = json.loads(json.dumps(GOOD).replace("LOG", f"e{n0}").replace("ROLLOUT", f"e{n0 + 2}"))
     model.steps = steps
     inv = ts.run(inc.id, at(310))
@@ -247,7 +252,7 @@ def ui(profile="remediate"):
     from test_executor import FakeExecutor
 
     cfg, store, inc, model, ts, _ = setup([], profile=profile)
-    n0 = store.next_evidence_index(inc.id)
+    n0 = next_ref_number(store, inc)
     model.steps = json.loads(json.dumps(GOOD).replace("LOG", f"e{n0}").replace("ROLLOUT", f"e{n0 + 2}"))
     cfg.ui.allowed_hosts = ["testserver"]
     executor = FakeExecutor()

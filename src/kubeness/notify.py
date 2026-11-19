@@ -386,11 +386,13 @@ class Sender:
                         return sent  # the notifier or provider is down; try the rest later
                     continue
                 except Exception as e:
-                    # Anything unexpected is retried like an outage: a row left in
+                    # Anything unexpected is retried with back-off: a row left in
                     # `sending` would not be attempted again before the next restart.
+                    # Only this item is held back; an error that comes from the item
+                    # itself must not delay the rest of the queue.
                     log.exception("sending notification %s failed", item.id)
                     self._failed(item, table, attempts, f"{type(e).__name__}: {str(e)[:200]}", False, now)
-                    return sent
+                    continue
                 self.store.update_notification(item.id, table, status=status, accepted_at=now, last_error=None,
                                                next_attempt_at=None)
                 self._activity(item, now, f"{item.event.capitalize()} notification accepted by the provider"
@@ -422,8 +424,12 @@ class Sender:
             return False
         return self.last_heartbeat is None or now - self.last_heartbeat >= interval
 
-    def heartbeat_once(self, now: datetime, observer_ok: bool) -> bool:
-        if not observer_ok or not self.heartbeat_due(now):
+    def heartbeat_once(self, now: datetime, observer_ok: bool | Callable[[], bool]) -> bool:
+        """`observer_ok` may be a callable: the observer's status costs queries, so it
+        is asked only once a heartbeat is due."""
+        if not self.heartbeat_due(now):
+            return False
+        if not (observer_ok() if callable(observer_ok) else observer_ok):
             return False
         try:
             self.client.heartbeat(self.cfg.timeout.total_seconds())
@@ -446,9 +452,7 @@ class Sender:
                 now = utcnow()
                 try:
                     self.run_once(now)
-                    # The observer's status costs queries; ask only when a heartbeat is due.
-                    if self.heartbeat_due(now):
-                        self.heartbeat_once(now, observer_ok())
+                    self.heartbeat_once(now, observer_ok)
                 except Exception:  # keep delivering; surface the error in status
                     log.exception("notification sender failed")
                 stop.wait(self.cfg.send_interval.total_seconds())

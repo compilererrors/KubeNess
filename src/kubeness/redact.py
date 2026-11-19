@@ -53,13 +53,19 @@ def redact(text: str) -> tuple[str, int]:
 def redact_obj(obj: object, _under_secret_key: bool = False) -> object:
     """Return a masked copy of a JSON-like structure.
 
-    Every string is masked like text, and a value stored under a credential-like key
-    (password, apiKey, DB_TOKEN ...) is masked whole. This walks the structure instead
-    of masking its JSON text: a pattern that ends inside an escaped quote would leave
-    text that no longer parses.
+    Every string is masked like text, and every value stored under a credential-like
+    key (password, apiKey, DB_TOKEN ...) is masked whole, however deep it sits below
+    that key. So is the value of a name/value pair whose name is credential-like, the
+    shape of a container env entry. This walks the structure instead of masking its
+    JSON text: a pattern that ends inside an escaped quote would leave text that no
+    longer parses.
     """
     if isinstance(obj, dict):
-        return {k: redact_obj(v, isinstance(k, str) and _SECRET_KEY.search(k) is not None) for k, v in obj.items()}
+        name = obj.get("name")
+        pair_secret = isinstance(name, str) and _SECRET_KEY.search(name) is not None and "value" in obj
+        return {k: redact_obj(v, _under_secret_key or (isinstance(k, str) and _SECRET_KEY.search(k) is not None)
+                              or (pair_secret and k == "value"))
+                for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
         return [redact_obj(v, _under_secret_key) for v in obj]
     if _under_secret_key and isinstance(obj, (str, int, float)) and not isinstance(obj, bool) and obj != "":

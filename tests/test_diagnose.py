@@ -56,6 +56,17 @@ def test_redaction_of_a_structure_masks_strings_and_values_under_credential_keys
     assert json.loads(json.dumps(out)) == out
 
 
+def test_redaction_of_a_structure_masks_everything_below_a_credential_key_and_env_pairs():
+    obj = {
+        "password": {"value": "hunter2", "previous": ["old1"]},
+        "env": [{"name": "DB_PASSWORD", "value": "s3cr3t"}, {"name": "LOG_LEVEL", "value": "debug"}],
+    }
+    assert redact_obj(obj) == {
+        "password": {"value": "[REDACTED]", "previous": ["[REDACTED]"]},
+        "env": [{"name": "DB_PASSWORD", "value": "[REDACTED]"}, {"name": "LOG_LEVEL", "value": "debug"}],
+    }
+
+
 # --- validation ------------------------------------------------------------------------------
 
 def test_validate_refs_drops_unsupported_claims():

@@ -111,13 +111,19 @@ class Observer:
             self.stop.wait(interval)
 
 
+# Files Docker and Podman create in every container.
+CONTAINER_MARKERS = ("/.dockerenv", "/run/.containerenv")
+
+
 def bind_host(cfg: Config) -> str:
     """`ui.host` when set. Otherwise every interface in a cluster (kubelet probes reach
-    the pod by its IP) and loopback anywhere else: a developer machine must not offer
+    the pod by its IP) or a container (a published port reaches it from outside its
+    network namespace), and loopback anywhere else: a developer machine must not offer
     the UI to its whole network."""
     if cfg.ui.host:
         return cfg.ui.host
-    return "0.0.0.0" if os.environ.get("KUBERNETES_SERVICE_HOST") else "127.0.0.1"
+    in_container = any(os.path.exists(p) for p in CONTAINER_MARKERS)
+    return "0.0.0.0" if os.environ.get("KUBERNETES_SERVICE_HOST") or in_container else "127.0.0.1"
 
 
 def main(argv: list[str] | None = None) -> int:

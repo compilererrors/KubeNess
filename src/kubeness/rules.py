@@ -82,12 +82,12 @@ def _all_running_ready_since(pods: list[dict]) -> datetime | None:
     time forward and restarts the recovery window.
 
     Finished pods cannot become ready and do not count against the live ones. A
-    workload with only finished pods is healthy when all of them succeeded (a Job
-    that completed after retries), from the time the last container finished.
+    workload with only finished pods is healthy when the pod that finished last
+    succeeded, from the time it finished.
     """
     live = [p for p in pods if not _finished(p)]
     if not live:
-        return _all_succeeded_since(pods)
+        return _succeeded_last_since(pods)
     latest: datetime | None = None
     seen = False
     for pod in live:
@@ -103,16 +103,22 @@ def _all_running_ready_since(pods: list[dict]) -> datetime | None:
     return latest
 
 
-def _all_succeeded_since(pods: list[dict]) -> datetime | None:
-    latest: datetime | None = None
+def _succeeded_last_since(pods: list[dict]) -> datetime | None:
+    """When the pod that finished last succeeded, the time it finished.
+
+    A Job with restartPolicy Never retries in new pods and keeps the failed ones
+    listed, so a Job that completed after retries has Failed pods next to the
+    Succeeded one. A Job that gave up ends with a Failed pod.
+    """
+    last: tuple[datetime, dict] | None = None
     for pod in pods:
-        if (pod.get("status") or {}).get("phase") != "Succeeded":
-            return None
         for c in containers(pod, include_init=False):
             finished = parse_time((c.state.get("terminated") or {}).get("finishedAt"))
-            if finished and (latest is None or finished > latest):
-                latest = finished
-    return latest
+            if finished and (last is None or finished > last[0]):
+                last = (finished, pod)
+    if last is None or (last[1].get("status") or {}).get("phase") != "Succeeded":
+        return None
+    return last[0]
 
 
 class RestartRule(Rule):

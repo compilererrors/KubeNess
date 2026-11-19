@@ -262,6 +262,34 @@ def test_a_job_that_completed_after_retries_recovers(store):
     assert store.get_incident(inc.id).state is State.RESOLVED
 
 
+def test_a_job_that_succeeded_in_a_new_pod_after_failed_ones_recovers(store):
+    # restartPolicy Never: every retry is a new pod and the failed ones stay listed.
+    engine = make_engine(store, rules=["restarts"])
+    job = {"kind": "Job", "name": "migrate", "uid": "job-uid-1", "controller": True}
+    for t in range(0, 200, 10):
+        engine.tick(snap(at(t), pods=[pod("migrate-x", statuses=[crashloop_status(t)], owner=job)]), at(t))
+    (inc,) = engine.open.values()
+    failed = [finished_pod("Failed", "Error", 1, 150 + i, name=f"migrate-f{i}", uid=f"pod-f{i}", owner=job)
+              for i in range(2)]
+    done = finished_pod("Succeeded", "Completed", 0, 200, name="migrate-y", uid="pod-y", owner=job)
+    for t in range(200, 320, 10):
+        engine.tick(snap(at(t), pods=[*failed, done]), at(t))
+    assert engine.open == {}
+    assert store.get_incident(inc.id).state is State.RESOLVED
+
+
+def test_a_job_whose_last_pod_failed_is_not_a_recovery(store):
+    engine = make_engine(store, rules=["restarts"])
+    job = {"kind": "Job", "name": "migrate", "uid": "job-uid-1", "controller": True}
+    for t in range(0, 200, 10):
+        engine.tick(snap(at(t), pods=[pod("migrate-x", statuses=[crashloop_status(t)], owner=job)]), at(t))
+    done = finished_pod("Succeeded", "Completed", 0, 150, name="migrate-y", uid="pod-y", owner=job)
+    failed = finished_pod("Failed", "Error", 1, 200, name="migrate-f", uid="pod-f", owner=job)
+    for t in range(200, 400, 10):
+        engine.tick(snap(at(t), pods=[done, failed]), at(t))
+    assert [i.state for i in engine.open.values()] == [State.FIRING]
+
+
 def test_a_failed_pod_alone_is_not_a_recovery(store):
     engine = make_engine(store, rules=["restarts"])
     job = {"kind": "Job", "name": "migrate", "uid": "job-uid-1", "controller": True}

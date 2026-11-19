@@ -248,7 +248,8 @@ class ExperimentalConfig(_Model):
 class UiConfig(_Model):
     port: int = 8080
     # Address the web server binds. Unset: every interface in a cluster, where the
-    # kubelet probes need it and NetworkPolicy guards the pod, and loopback elsewhere.
+    # kubelet probes need it and NetworkPolicy guards the pod, and in a container,
+    # where a published port needs it; loopback elsewhere.
     # The Host check below stops DNS rebinding; it does not authenticate other
     # machines on the network.
     host: str | None = None

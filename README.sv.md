@@ -106,7 +106,7 @@ Kör observern lokalt mot labbklustret:
 .venv/bin/python -m kubeness --config config/example.yaml
 ```
 
-Utanför ett kluster lyssnar UI:t bara på 127.0.0.1; `ui.host` ändrar det.
+Utanför ett kluster och utanför en container lyssnar UI:t bara på 127.0.0.1; `ui.host` ändrar det.
 
 KPI-benchmarks (`tests/kpi/` och KPI-anrop i e2e-sviten) har mätbara mål och skrivs ut som en tabell sist i pytest-utskriften, eller som JSON med `KUBENESS_KPI_REPORT=<fil>`. Tidsmätningar mäts om vid en miss och markeras NOISY när maskinen är överbelastad.
 

@@ -318,6 +318,25 @@ def test_sender_retries_after_an_unexpected_error():
     assert r.last_error == "RuntimeError: bug in the client"
 
 
+def test_an_unexpected_error_from_one_notification_does_not_hold_back_the_others():
+    class BrokenForOne(FakeClient):
+        def send(self, payload, timeout):
+            if payload["id"] == first:
+                raise TypeError("cannot encode this payload")
+            return super().send(payload, timeout)
+
+    cfg, store, n = firing_setup(backoff="10s")
+    first = n.id
+    later = OutboxItem("later:firing:0", n.incident_id, "firing", at(299), "queued", 0, at(299), None, None,
+                       {"id": "later:firing:0"})
+    assert store.enqueue_notification(later)
+    client = BrokenForOne()
+    assert Sender(cfg, store, client).run_once(at(300)) == 1
+    assert [p["id"] for p in client.sent] == ["later:firing:0"]
+    assert {r.id: r.status for r in store.notifications()} == {first: "retry_scheduled",
+                                                               "later:firing:0": "provider_accepted"}
+
+
 def test_sender_start_recovers_interrupted_sends():
     cfg, store, n = firing_setup()
     store.update_notification(n.id, status="sending")
@@ -363,10 +382,13 @@ def test_observer_status_is_only_asked_when_a_heartbeat_is_due():
                                                        "sendInterval": "1s"}})
         sender = Sender(cfg, Store(":memory:"), FakeClient())
         calls = []
+
+        def observer_ok() -> bool:
+            calls.append(1)
+            return True
+
         for t in range(0, 600, 2):          # what the loop in start() does on every round
-            if sender.heartbeat_due(at(t)):
-                calls.append(t)
-                sender.heartbeat_once(at(t), observer_ok=True)
+            sender.heartbeat_once(at(t), observer_ok)
         return len(calls)
 
     assert asked("0s") == 0

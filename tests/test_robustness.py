@@ -68,13 +68,16 @@ def test_an_existing_evidence_ref_is_never_overwritten():
     store.save_incident(Incident("inc-1", "fp", "restarts", "lab", WorkloadRef("Deployment", "lab", "web", "u1"),
                                  "warning", State.FIRING, "r", at(0), at(0)))
     assert store.add_evidence("inc-1", [EvidenceItem("", at(0), "rule", "first", {})]) == ["e1"]
+    second = EvidenceItem("", at(1), "log", "second", {})
     with pytest.raises(sqlite3.IntegrityError):
-        store.add_evidence("inc-1", [EvidenceItem("", at(1), "log", "second", {}),
-                                     EvidenceItem("e1", at(1), "log", "collides", {})])
+        store.add_evidence("inc-1", [second, EvidenceItem("e1", at(1), "log", "collides", {})])
     assert [(e.ref, e.summary) for e in store.evidence("inc-1")] == [("e1", "first")], "the batch is rolled back"
+    assert second.ref == "", "a rolled-back item keeps no ref"
+    store.add_evidence("inc-1", [EvidenceItem("", at(2), "log", "between", {})])
+    assert store.add_evidence("inc-1", [second]) == ["e3"], "added again, it is numbered afresh"
 
 
-def test_a_failing_rule_does_not_stop_the_others_or_close_its_own_incidents():
+def test_a_failing_rule_does_not_stop_the_others_or_close_its_own_incidents(caplog):
     cfg = Config()
     store = Store(":memory:")
     engine = Engine(cfg, store)
@@ -97,6 +100,8 @@ def test_a_failing_rule_does_not_stop_the_others_or_close_its_own_incidents():
     assert states["imagePull"] is State.RESOLVED, "the other rules keep evaluating"
     assert states["restarts"] is State.FIRING, "no evaluation is not the same as a removed workload"
     assert engine.last_tick == at(410) and "rule bug" in engine.rule_errors["restarts"]
+    tracebacks = [r for r in caplog.records if r.levelname == "ERROR" and r.exc_info]
+    assert len(tracebacks) == 1, "the traceback is logged once, not on every tick"
 
     del restarts.evaluate
     engine.tick(snap(at(420), **two_workloads(420)), at(420))

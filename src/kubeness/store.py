@@ -410,9 +410,12 @@ class Store:
         """
         with self._lock:
             n = self._next_evidence_number(incident_id)
+            refs = []
             for e in items:
-                if not e.ref:
-                    e.ref = f"e{n}"
+                if e.ref:
+                    refs.append(e.ref)
+                else:
+                    refs.append(f"e{n}")
                     n += 1
             self._db.execute("BEGIN")
             try:
@@ -420,16 +423,20 @@ class Store:
                     "INSERT INTO evidence (incident_id, ref, collected_at, kind, summary, payload)"
                     " VALUES (?, ?, ?, ?, ?, ?)",
                     [
-                        (incident_id, e.ref, e.collected_at.isoformat(), e.kind, e.summary,
+                        (incident_id, ref, e.collected_at.isoformat(), e.kind, e.summary,
                          json.dumps(e.payload, sort_keys=True))
-                        for e in items
+                        for ref, e in zip(refs, items)
                     ],
                 )
             except BaseException:
                 self._db.execute("ROLLBACK")
                 raise
             self._db.execute("COMMIT")
-        return [e.ref for e in items]
+            # Only once stored: after a rollback the items keep no ref, so adding them
+            # again numbers them afresh instead of reusing refs others may have taken.
+            for ref, e in zip(refs, items):
+                e.ref = ref
+        return refs
 
     def _next_evidence_number(self, incident_id: str) -> int:
         """Call with the lock held."""
@@ -437,12 +444,6 @@ class Store:
             "SELECT COALESCE(MAX(CAST(SUBSTR(ref, 2) AS INTEGER)), 0) AS n FROM evidence WHERE incident_id = ?",
             (incident_id,)).fetchone()
         return row["n"] + 1
-
-    def next_evidence_index(self, incident_id: str) -> int:
-        """The number the next added item gets, for reading only: `add_evidence`
-        assigns the refs itself."""
-        with self._lock:
-            return self._next_evidence_number(incident_id)
 
     def evidence(self, incident_id: str) -> list[EvidenceItem]:
         rows = self._query(

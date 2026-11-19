@@ -59,6 +59,6 @@ notifications:
   heartbeatInterval: 0s
 ui:
   port: 8080
-  # Outside a cluster the UI listens on 127.0.0.1 only. Set host to change that.
+  # Outside a cluster and a container the UI listens on 127.0.0.1 only. Set host to change that.
   # host: 127.0.0.1
   allowedHosts: [127.0.0.1, localhost]
