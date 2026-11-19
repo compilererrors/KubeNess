@@ -7,7 +7,7 @@ from kubeness.lifecycle import State
 from kubeness.store import Store
 
 from factories import (
-    at, deployment, event, pod, running, snap, waiting,
+    at, deployment, event, iso, pod, running, snap, waiting,
 )
 
 
@@ -122,6 +122,15 @@ def test_short_blip_is_cancelled_without_incident(store):
     assert store.list_incidents() == []
 
 
+def test_a_single_restart_is_pending_with_a_reason(store):
+    engine = make_engine(store)
+    engine.tick(snap(at(0), pods=[pod(statuses=[running()])]), at(0))
+    engine.tick(snap(at(10), pods=[pod(statuses=[running(started=at(6), restarts=1, last_finished=at(5))])]), at(10))
+    (inc,) = engine.open.values()
+    assert (inc.rule_id, inc.state, inc.reason) == ("restarts", State.PENDING, "1 restart within 5m")
+    assert store.activity(inc.id)[0].message == "Pending: 1 restart within 5m"
+
+
 def test_readiness_ignores_progressing_rollout_then_fires(store):
     engine = make_engine(store)
     rolling = deployment(replicas=2, ready=1, progressing=("True", "ReplicaSetUpdated"))
@@ -188,10 +197,80 @@ def test_stale_namespace_freezes_incident(store):
 def test_workload_removed_resolves(store):
     engine = make_engine(store)
     states_over(engine, crashloop_status, 0, 5 * 60)
-    engine.tick(snap(at(400), pods=[], deployments=[]), at(400))
+    # Gone for less than the settle period could be a rollout between two pods.
+    for t in (400, 410, 420):
+        engine.tick(snap(at(t), pods=[], deployments=[]), at(t))
+    assert [i.state for i in engine.open.values()] == [State.FIRING]
+    engine.tick(snap(at(430), pods=[], deployments=[]), at(430))
     assert engine.open == {}
     (inc,) = store.list_incidents()
     assert inc.state is State.RESOLVED
+    assert store.activity(inc.id)[-1].message == "Resolved: workload no longer present"
+
+
+def test_terminating_pods_do_not_resolve_a_firing_incident(store):
+    """A Recreate rollout or a replaced StatefulSet pod leaves a moment without an active
+    pod. That is neither a recovery nor a removed workload."""
+    engine = make_engine(store)
+    states_over(engine, crashloop_status, 0, 5 * 60)
+    (inc,) = engine.open.values()
+    leaving = pod(statuses=[crashloop_status(300)])
+    leaving["metadata"]["deletionTimestamp"] = iso(at(300))
+    for t in (300, 310):
+        engine.tick(snap(at(t), pods=[leaving]), at(t))
+    assert engine.open[inc.fingerprint].state is State.FIRING
+    # The replacement crash-loops like the old pod: same incident, never resolved or reopened.
+    for t in range(320, 600, 10):
+        replacement = pod("web-abc-2", "pod-uid-2", [crashloop_status(t, start_offset=320)])
+        engine.tick(snap(at(t), pods=[replacement]), at(t))
+    (still,) = engine.open.values()
+    assert (still.id, still.state, still.recurrence_count) == (inc.id, State.FIRING, 0)
+    assert "resolved" not in [a.kind for a in store.activity(inc.id)]
+
+
+def finished_pod(phase: str, reason: str, exit_code: int, finished: float, restarts: int = 0, **kw) -> dict:
+    p = pod(statuses=[{
+        "name": "app", "ready": False, "restartCount": restarts, "image": "x", "imageID": "sha256:abc",
+        "state": {"terminated": {"reason": reason, "exitCode": exit_code, "finishedAt": iso(at(finished))}}}], **kw)
+    p["status"]["phase"] = phase
+    return p
+
+
+def test_an_evicted_pod_next_to_a_healthy_one_does_not_block_recovery(store):
+    engine = make_engine(store)
+    states_over(engine, crashloop_status, 0, 5 * 60)
+    evicted = finished_pod("Failed", "ContainerStatusUnknown", 137, 100, name="web-abc-0", uid="pod-uid-0")
+    for t in range(300, 420, 10):
+        healthy = pod("web-abc-2", "pod-uid-2", [running(started=at(300))])
+        engine.tick(snap(at(t), pods=[healthy, evicted]), at(t))
+    assert engine.open == {}
+    (inc,) = store.list_incidents()
+    assert inc.state is State.RESOLVED
+
+
+def test_a_job_that_completed_after_retries_recovers(store):
+    engine = make_engine(store, rules=["restarts"])
+    job = {"kind": "Job", "name": "migrate", "uid": "job-uid-1", "controller": True}
+    for t in range(0, 200, 10):
+        engine.tick(snap(at(t), pods=[pod("migrate-x", statuses=[crashloop_status(t)], owner=job)]), at(t))
+    (inc,) = engine.open.values()
+    assert (inc.workload.kind, inc.state) == ("Job", State.FIRING)
+    done = finished_pod("Succeeded", "Completed", 0, 200, restarts=4, name="migrate-x", owner=job)
+    for t in range(200, 320, 10):
+        engine.tick(snap(at(t), pods=[done]), at(t))
+    assert engine.open == {}
+    assert store.get_incident(inc.id).state is State.RESOLVED
+
+
+def test_a_failed_pod_alone_is_not_a_recovery(store):
+    engine = make_engine(store, rules=["restarts"])
+    job = {"kind": "Job", "name": "migrate", "uid": "job-uid-1", "controller": True}
+    for t in range(0, 200, 10):
+        engine.tick(snap(at(t), pods=[pod("migrate-x", statuses=[crashloop_status(t)], owner=job)]), at(t))
+    failed = finished_pod("Failed", "Error", 1, 200, restarts=4, name="migrate-x", owner=job)
+    for t in range(200, 400, 10):
+        engine.tick(snap(at(t), pods=[failed]), at(t))
+    assert [i.state for i in engine.open.values()] == [State.FIRING]
 
 
 def test_open_incidents_survive_engine_restart(store):

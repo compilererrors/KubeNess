@@ -194,6 +194,49 @@ def test_model_errors_end_the_investigation_cleanly():
     assert store.investigations(inc.id)[0].status == "failed"
 
 
+def test_a_log_line_with_a_quoted_credential_does_not_break_the_run():
+    """Masking the JSON text of the payload cut through the escaped quote of token="..."
+    and the result no longer parsed; the run died and stayed "running"."""
+    steps = [{"tool": "logs", "args": {"pod": "web-abc-1", "container": "app", "previous": False}, "note": "read it"},
+             {"tool": "finish", "args": {"summary": "Login fails.", "findings": []}}]
+    _, store, inc, _, ts, logs = setup(steps)
+    logs.text = 'starting\nlevel=error msg="login failed" token="abc123def456"\ndb password: "hunter2"\n'
+    inv = ts.run(inc.id, at(310))
+    assert inv.status == "done" and [s["status"] for s in inv.steps] == ["ok", "ok"]
+    log = [e for e in store.evidence(inc.id) if e.kind == "log"][-1]
+    assert 'token="[REDACTED]"' in log.payload["text"]
+    stored = json.dumps([e.payload for e in store.evidence(inc.id)]) + json.dumps(inv.steps)
+    assert "abc123def456" not in stored and "hunter2" not in stored
+
+
+def test_an_unexpected_error_fails_the_run_instead_of_leaving_it_running():
+    import pytest
+
+    _, store, inc, _, ts, _ = setup([{"tool": "events", "args": {}, "note": "look"}])
+
+    def broken_snapshot():
+        raise RuntimeError("cache bug")
+
+    ts.snapshot_fn = broken_snapshot
+    with pytest.raises(RuntimeError):
+        ts.run(inc.id, at(310))
+    (inv,) = store.investigations(inc.id)
+    assert inv.status == "failed" and inv.finished_at is not None
+    assert inv.error == "internal error (RuntimeError)"
+
+
+def test_a_run_interrupted_by_a_restart_is_closed():
+    from kubeness.store import Investigation
+
+    _, store, inc, _, _, _ = setup([])
+    store.save_investigation(Investigation("inv-1", inc.id, at(300), None, "running", "m", False, [], {}, None))
+    store.save_investigation(Investigation("inv-0", inc.id, at(200), at(250), "done", "m", False, [], {}, None))
+    assert store.fail_interrupted_investigations(at(400)) == 1
+    by_id = {i.id: i for i in store.investigations(inc.id)}
+    assert (by_id["inv-1"].status, by_id["inv-1"].finished_at) == ("failed", at(400))
+    assert "restart" in by_id["inv-1"].error and by_id["inv-0"].status == "done"
+
+
 # --- UI -----------------------------------------------------------------------------------------
 
 def ui(profile="remediate"):

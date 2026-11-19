@@ -56,6 +56,35 @@ def app(provider=None, heartbeat=None, token=TOKEN):
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
 
 
+def on_event_loop() -> bool:
+    import asyncio
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
+def test_the_provider_call_does_not_block_the_event_loop():
+    """A hanging destination must not stop the notifier from answering its probes."""
+    class Where(Recorder):
+        def send(self, p):
+            self.calls.append(on_event_loop())
+
+    provider, c = app(Where())
+    assert c.post("/v1/notify", json=payload(), headers=AUTH).status_code == 200
+    assert provider.calls == [False]
+
+
+def test_digest_lines_pass_the_notifiers_own_masking():
+    provider, c = app()
+    body = payload(event="digest", severity="info", state="info", rule="digest", workload="Digest",
+                   items=["Deployment lab/web: container app restarted", "note: password=hunter2 in a line"])
+    assert c.post("/v1/notify", json=body, headers=AUTH).status_code == 200
+    (sent,) = provider.calls
+    assert sent.items == ["Deployment lab/web: container app restarted", "note: password=[REDACTED] in a line"]
+
+
 # --- B07 service -------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("headers", [{}, {"Authorization": "Bearer wrong"}, {"Authorization": TOKEN}])

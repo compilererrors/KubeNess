@@ -1,5 +1,6 @@
-# Observer (stage 1), optional local model (stage 2) and notifier (stage 3).
-# Read-only access in the watched namespaces; the executor is not part of the chart.
+# Observer (stage 1), optional local model (stage 2), notifier (stage 3) and executor
+# (stage 6). The observer only reads in the watched namespaces; the optional executor
+# is the one component that writes.
 
 cluster: lab
 
@@ -33,8 +34,9 @@ access:
   exec: false
 
 # Writes to the cluster (stage 6, optional). Both must be true: the executor pod
-# gets a writer Role (get/patch deployments) in the watched namespaces, and the UI
-# offers restart-deployment with approval. Off: there is no writer identity.
+# gets a writer Role (get/patch deployments, get/list replicasets) in the namespaces
+# of remediate silos, and the UI offers the allowed actions with approval. Off: there
+# is no writer identity.
 actions:
   enabled: false
   # restart-deployment | rollback-deployment
@@ -87,6 +89,8 @@ observer:
   resync: 10m
   watchTimeout: 60s
   freshnessBudget: 3m
+  # Resolved incidents and sent digests older than this are deleted.
+  retention: 14d
   resources:
     requests: {cpu: 100m, memory: 96Mi}
     limits: {memory: 256Mi}

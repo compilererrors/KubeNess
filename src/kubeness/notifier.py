@@ -29,6 +29,7 @@ import yaml
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from starlette.concurrency import run_in_threadpool
 
 from .config import Duration
 from .notification import NotificationPayload, title
@@ -212,7 +213,8 @@ def _mask(p: NotificationPayload) -> NotificationPayload:
         return redact(s)[0]
     return p.model_copy(update={
         "observed": m(p.observed), "possible_cause": m(p.possible_cause), "next_check": m(p.next_check),
-        "missing": [m(x) for x in p.missing], "workload": m(p.workload), "text": m(p.text),
+        "missing": [m(x) for x in p.missing], "items": [m(x) for x in p.items], "workload": m(p.workload),
+        "text": m(p.text),
     })
 
 
@@ -241,7 +243,9 @@ def create_notifier_app(provider: Provider, heartbeat: Provider | None, token: C
             n = len(e.errors()) if isinstance(e, ValidationError) else 1
             return JSONResponse({"status": "invalid", "detail": f"{n} invalid field(s)"}, status_code=422)
         try:
-            provider.send(_mask(p))
+            # The provider call blocks for up to the timeout; keep it off the event
+            # loop so the probes are still answered while a destination hangs.
+            await run_in_threadpool(provider.send, _mask(p))
         except ProviderError as e:
             log.warning("notification %s (%s) not accepted: %s", p.id, p.event, e)
             return JSONResponse({"status": "provider_error", "error": str(e)}, status_code=502)

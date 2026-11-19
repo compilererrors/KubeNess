@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Callable, Iterable, Protocol
 
 import httpx
@@ -69,10 +69,17 @@ def template_for(cfg: Config, store: Store, inc: Incident) -> Analysis:
     return template_analysis(inc, store.evidence(inc.id), cfg.access.logs_allowed(inc.workload.namespace))
 
 
-def build_payload(cfg: Config, store: Store, inc: Incident, event: str, notification_id: str) -> NotificationPayload:
+def build_payload(cfg: Config, store: Store, inc: Incident, event: str, notification_id: str,
+                  gone: bool = False) -> NotificationPayload:
+    """`gone`: a resolved incident closed because its workload is no longer there."""
     tmpl = template_for(cfg, store, inc)
     wl = inc.workload
-    observed = inc.reason if event != "resolved" else f"Recovered and healthy for the recovery window. Was: {inc.reason}"
+    if event != "resolved":
+        observed = inc.reason
+    elif gone:
+        observed = f"The workload is no longer present. Was: {inc.reason}"
+    else:
+        observed = f"Recovered and healthy for the recovery window. Was: {inc.reason}"
     p = NotificationPayload(
         id=notification_id,
         event=event,
@@ -156,13 +163,16 @@ class NotificationPolicy:
             else:
                 self._enqueue(inc, "reopened", f"{inc.id}:reopened:{inc.recurrence_count}", now)
         elif t.kind == "escalated":
-            self._enqueue(inc, "escalated", f"{inc.id}:escalated:{inc.recurrence_count}", now)
+            # The severity is part of the id: an incident can be raised twice in one
+            # recurrence (info to warning, then to critical), and each raise is news.
+            self._enqueue(inc, "escalated", f"{inc.id}:escalated:{inc.recurrence_count}:{inc.severity}", now)
         elif t.kind == "resolved":
             items = self.store.notifications(inc.id)
             last_alert = max((i for i, n in enumerate(items) if n.event in ANNOUNCED), default=-1)
             last_resolved = max((i for i, n in enumerate(items) if n.event == "resolved"), default=-1)
             if last_alert > last_resolved:
-                self._enqueue(inc, "resolved", f"{inc.id}:resolved:{inc.recurrence_count}", now)
+                self._enqueue(inc, "resolved", f"{inc.id}:resolved:{inc.recurrence_count}", now, gone=t.gone)
+
     def _reminders(self, inc: Incident, now: datetime) -> None:
         if inc.state is not State.FIRING or inc.severity == "info":
             return
@@ -188,8 +198,8 @@ class NotificationPolicy:
     def _last(self, incident_id: str, events: tuple[str, ...]) -> OutboxItem | None:
         return next((n for n in reversed(self.store.notifications(incident_id)) if n.event in events), None)
 
-    def _enqueue(self, inc: Incident, event: str, notification_id: str, now: datetime) -> None:
-        payload = build_payload(self.cfg, self.store, inc, event, notification_id)
+    def _enqueue(self, inc: Incident, event: str, notification_id: str, now: datetime, gone: bool = False) -> None:
+        payload = build_payload(self.cfg, self.store, inc, event, notification_id, gone)
         item = OutboxItem(notification_id, inc.id, event, now, "queued", 0, now, None, None, payload.wire())
         if self.store.enqueue_notification(item):
             self.store.add_activity(inc.id, now, "notification", f"Queued {event} notification {notification_id}")
@@ -375,6 +385,12 @@ class Sender:
                     if not e.permanent:
                         return sent  # the notifier or provider is down; try the rest later
                     continue
+                except Exception as e:
+                    # Anything unexpected is retried like an outage: a row left in
+                    # `sending` would not be attempted again before the next restart.
+                    log.exception("sending notification %s failed", item.id)
+                    self._failed(item, table, attempts, f"{type(e).__name__}: {str(e)[:200]}", False, now)
+                    return sent
                 self.store.update_notification(item.id, table, status=status, accepted_at=now, last_error=None,
                                                next_attempt_at=None)
                 self._activity(item, now, f"{item.event.capitalize()} notification accepted by the provider"
@@ -394,15 +410,20 @@ class Sender:
             self.store.update_notification(item.id, table, status="failed", last_error=error, next_attempt_at=None)
             self._activity(item, now, f"{item.event.capitalize()} notification failed after {attempts} attempts: {error}")
             return
-        delay = min(self.cfg.backoff * 2 ** (attempts - 1), self.cfg.backoff_max)
+        # In seconds and with a capped exponent: timedelta * 2**n overflows after ~43 doublings.
+        delay = min(self.cfg.backoff.total_seconds() * 2.0 ** min(attempts - 1, 60),
+                    self.cfg.backoff_max.total_seconds())
         self.store.update_notification(item.id, table, status="retry_scheduled", last_error=error,
-                                       next_attempt_at=now + delay)
+                                       next_attempt_at=now + timedelta(seconds=delay))
+
+    def heartbeat_due(self, now: datetime) -> bool:
+        interval = self.cfg.heartbeat_interval
+        if self.client is None or not interval:
+            return False
+        return self.last_heartbeat is None or now - self.last_heartbeat >= interval
 
     def heartbeat_once(self, now: datetime, observer_ok: bool) -> bool:
-        interval = self.cfg.heartbeat_interval
-        if self.client is None or not interval or not observer_ok:
-            return False
-        if self.last_heartbeat is not None and now - self.last_heartbeat < interval:
+        if not observer_ok or not self.heartbeat_due(now):
             return False
         try:
             self.client.heartbeat(self.cfg.timeout.total_seconds())
@@ -425,7 +446,9 @@ class Sender:
                 now = utcnow()
                 try:
                     self.run_once(now)
-                    self.heartbeat_once(now, observer_ok())
+                    # The observer's status costs queries; ask only when a heartbeat is due.
+                    if self.heartbeat_due(now):
+                        self.heartbeat_once(now, observer_ok())
                 except Exception:  # keep delivering; surface the error in status
                     log.exception("notification sender failed")
                 stop.wait(self.cfg.send_interval.total_seconds())

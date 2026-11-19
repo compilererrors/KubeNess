@@ -1,9 +1,11 @@
 """Small server-rendered UI and JSON API, reached through kubectl port-forward.
 
-Reads are GET; the only writes are acknowledge and silence, which change the
-application's own database and never the cluster. They are POST forms that need
-the per-process CSRF token and a same-origin Origin or Referer, on top of the
-Host check that blocks DNS rebinding. Neither mark changes the incident lifecycle.
+Reads are GET. Writes are POST forms that need the per-process CSRF token and a
+same-origin Origin or Referer, on top of the Host check that blocks DNS rebinding.
+Acknowledge and silence only mark the incident in the application's own database
+and never change its lifecycle; ask and troubleshoot store their answers there.
+The one write that reaches the cluster is an approved action, and that is sent to
+the executor pod: this process has no write access of its own.
 """
 
 from __future__ import annotations
@@ -316,7 +318,9 @@ def create_app(cfg: Config, store: Store, status: Callable[[], dict],
         inc, form = await mutation(request, incident_id)
         if actions is None or action not in cfg.actions.allowed:
             raise HTTPException(404)
-        revision = int(form["revision"]) if form.get("revision", "").isdigit() else None
+        rev = form.get("revision", "")
+        # isdigit() alone also accepts characters such as "²", which int() rejects.
+        revision = int(rev) if rev.isascii() and rev.isdigit() else None
         try:
             await run_in_threadpool(actions.request, inc, action, clock(), revision)
         except ValueError as e:

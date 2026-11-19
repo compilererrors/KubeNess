@@ -3,7 +3,18 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="refresh" content="15">
+<noscript><meta http-equiv="refresh" content="15"></noscript>
+<script>
+  // Reload every 15 s, but not while a form field has focus or holds unsent text:
+  // a plain meta refresh threw a half-written question away.
+  setInterval(function () {
+    var el = document.activeElement;
+    var editing = el && /^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName);
+    var fields = document.querySelectorAll("input:not([type]), input[type=text], textarea");
+    var draft = Array.prototype.some.call(fields, function (f) { return f.value !== ""; });
+    if (!editing && !draft) location.reload();
+  }, 15000);
+</script>
 <title>{% block title %}KubeNess{% endblock %}</title>
 <style>
   :root {

@@ -38,6 +38,18 @@ def test_list_and_detail_render(setup):
     assert "&lt;script&gt;" in r.text
 
 
+def test_auto_refresh_spares_a_half_written_question(setup):
+    """The reload is scripted so it can skip a form that is in use; the unconditional
+    meta refresh, which wiped the question field every 15 seconds, is the no-script fallback only."""
+    client, store = setup
+    (inc,) = store.list_incidents()
+    for page in (client.get("/").text, client.get(f"/incidents/{inc.id}").text):
+        head = page.split("</head>")[0]
+        assert head.count('http-equiv="refresh"') == 1
+        assert '<noscript><meta http-equiv="refresh" content="15"></noscript>' in head
+        assert "location.reload()" in head and "activeElement" in head
+
+
 def test_json_api(setup):
     client, store = setup
     (inc,) = store.list_incidents()

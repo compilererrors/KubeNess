@@ -33,6 +33,41 @@ def test_rendered_config_is_valid():
         Config.model_validate(yaml.safe_load(cm["data"]["config.yaml"]))
 
 
+def test_retention_is_set_through_the_chart():
+    def config(*sets):
+        return yaml.safe_load(by(render(*sets), "ConfigMap", "kubeness-observer")[0]["data"]["config.yaml"])
+
+    assert config()["observer"]["retention"] == "14d"
+    cfg = Config.model_validate(config("observer.retention=30d"))
+    assert cfg.observer.retention.days == 30
+
+
+@pytest.mark.parametrize("name,problem", [("team a", "not a valid label value"), (123, "must be a string")])
+def test_a_silo_name_that_cannot_be_a_label_fails_the_install(name, problem):
+    import json
+
+    silos = json.dumps([{"name": name, "namespaces": ["lab"], "profile": "observe"}])
+    r = subprocess.run([HELM, "template", "kubeness", str(ROOT / "charts" / "kubeness"), "--set-json",
+                        f"access.silos={silos}"], capture_output=True, text=True)
+    assert r.returncode != 0 and problem in r.stderr
+
+
+def test_silo_names_are_rendered_as_string_labels():
+    import json
+
+    silos = json.dumps([{"name": "2024", "namespaces": ["lab"], "profile": "observe"}])
+    out = subprocess.run([HELM, "template", "kubeness", str(ROOT / "charts" / "kubeness"), "-n", "kubeness",
+                          "--set-json", f"access.silos={silos}"], capture_output=True, text=True, check=True).stdout
+    (role,) = [d for d in yaml.safe_load_all(out) if d and d["kind"] == "Role"]
+    assert role["metadata"]["labels"]["kubeness/silo"] == "2024"
+
+
+def test_model_runs_one_pod_at_a_time():
+    """A rolling update would need room for two copies of the weights."""
+    (dep,) = by(render("model.enabled=true"), "Deployment", "kubeness-model")
+    assert dep["spec"]["replicas"] == 1 and dep["spec"]["strategy"] == {"type": "Recreate"}
+
+
 def test_reader_role_has_no_secrets_exec_or_writes():
     role = by(render(), "Role")[0]
     verbs = {v for r in role["rules"] for v in r["verbs"]}

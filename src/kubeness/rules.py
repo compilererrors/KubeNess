@@ -66,15 +66,31 @@ def _container_facts(c: ContainerView) -> dict:
     return facts
 
 
+FINISHED_PHASES = {"Succeeded", "Failed"}
+
+
+def _finished(pod: dict) -> bool:
+    """A pod in a terminal phase: a completed Job pod, or an evicted or shut-down pod
+    that stays listed next to its replacement. It will never run again."""
+    return (pod.get("status") or {}).get("phase") in FINISHED_PHASES
+
+
 def _all_running_ready_since(pods: list[dict]) -> datetime | None:
     """Latest container start time when every regular container is running and ready.
 
     Uses the API's startedAt, so a crash between two evaluations still moves the
     time forward and restarts the recovery window.
+
+    Finished pods cannot become ready and do not count against the live ones. A
+    workload with only finished pods is healthy when all of them succeeded (a Job
+    that completed after retries), from the time the last container finished.
     """
+    live = [p for p in pods if not _finished(p)]
+    if not live:
+        return _all_succeeded_since(pods)
     latest: datetime | None = None
     seen = False
-    for pod in pods:
+    for pod in live:
         for c in containers(pod, include_init=False):
             seen = True
             if not (c.running and c.ready):
@@ -84,6 +100,18 @@ def _all_running_ready_since(pods: list[dict]) -> datetime | None:
                 latest = started
     if not seen:
         return None
+    return latest
+
+
+def _all_succeeded_since(pods: list[dict]) -> datetime | None:
+    latest: datetime | None = None
+    for pod in pods:
+        if (pod.get("status") or {}).get("phase") != "Succeeded":
+            return None
+        for c in containers(pod, include_init=False):
+            finished = parse_time((c.state.get("terminated") or {}).get("finishedAt"))
+            if finished and (latest is None or finished > latest):
+                latest = finished
     return latest
 
 
@@ -122,11 +150,12 @@ class RestartRule(Rule):
                 facts: list[dict] = []
                 for pod in pods:
                     uid = meta(pod).get("uid", "")
+                    finished = _finished(pod)
                     for c in containers(pod):
                         seen_containers.add((uid, c.name))
                         inc = self._increments(c, uid, now)
                         increments += inc
-                        if self._is_crash_looping(c, now):
+                        if not finished and self._is_crash_looping(c, now):
                             looping.append(c)
                         if inc or c.restart_count or c.waiting_reason:
                             facts.append(_container_facts(c))
@@ -142,6 +171,9 @@ class RestartRule(Rule):
                     reason = f"CrashLoopBackOff in container {looping[0].name}"
                 elif since is not None:
                     reason = "Crash loop (container briefly running between crashes)"
+                elif increments:
+                    # Below the threshold: the pending incident still says what was seen.
+                    reason = f"{increments} restart{'s' if increments != 1 else ''} within {_fmt(self.cfg.window)}"
                 else:
                     reason = ""
                 out.append(

@@ -52,7 +52,8 @@ class SiloConfig(_Model):
     * remediate:   + approved actions through the executor
     """
 
-    name: str = Field(min_length=1, max_length=63)
+    # Also a label value on the RBAC objects the chart creates.
+    name: str = Field(min_length=1, max_length=63, pattern=r"^[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$")
     namespaces: list[str] = Field(min_length=1)
     profile: Profile = "investigate"
 
@@ -246,6 +247,11 @@ class ExperimentalConfig(_Model):
 
 class UiConfig(_Model):
     port: int = 8080
+    # Address the web server binds. Unset: every interface in a cluster, where the
+    # kubelet probes need it and NetworkPolicy guards the pod, and loopback elsewhere.
+    # The Host check below stops DNS rebinding; it does not authenticate other
+    # machines on the network.
+    host: str | None = None
     # Host header values accepted by the web UI. Protects against DNS rebinding
     # when the UI is reached through kubectl port-forward on localhost.
     allowed_hosts: list[str] = Field(

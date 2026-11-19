@@ -145,9 +145,10 @@ def template_analysis(inc: Incident, evidence: list[EvidenceItem], logs_enabled:
         image = c.get("specImage") or "?"
         facts.append(_claim(text=f"The pod cannot pull image {image} ({c.get('waitingReason', 'pull error')}).",
                            evidence_refs=rref))
-        missing_tag = _events_matching(evidence, r"manifest unknown|not found|no such")
-        auth = _events_matching(evidence, r"unauthori[sz]ed|denied|authentication required|403")
-        network = _events_matching(evidence, r"timeout|no such host|connection refused|i/o timeout")
+        # "no such host" is a DNS failure, not a missing tag: keep the two patterns apart.
+        missing_tag = _events_matching(evidence, r"manifest unknown|not found|no such (image|manifest|tag)")
+        auth = _events_matching(evidence, r"unauthori[sz]ed|denied|authentication required|\b403\b")
+        network = _events_matching(evidence, r"timeout|timed out|no such host|connection refused")
         pulled = missing_tag or auth or network
         if pulled:
             facts.append(_claim(text=f"Event: {pulled[0].payload.get('message', '')[:240]}",

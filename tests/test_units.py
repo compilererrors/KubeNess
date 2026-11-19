@@ -74,3 +74,40 @@ def test_cache_marks_namespace_stale():
     cache.mark_error("lab", "pods", "connection refused")
     assert cache.snapshot(at(610)).stale_namespaces == set()
     assert cache.snapshot(at(600 + 181)).stale_namespaces == {"lab"}
+
+
+@pytest.mark.parametrize("name", ["team a", "-lab", "lab/", "x" * 64])
+def test_a_silo_name_must_be_usable_as_a_label_value(name):
+    with pytest.raises(ValidationError):
+        Config.model_validate({"access": {"silos": [{"name": name, "namespaces": ["lab"]}]}})
+
+
+def test_ordinary_silo_names_are_accepted():
+    cfg = Config.model_validate({"access": {"silos": [{"name": "shop_1.eu", "namespaces": ["shop"]},
+                                                      {"name": "lab-observe", "namespaces": ["lab"]}]}})
+    assert cfg.access.namespaces == ["shop", "lab"]
+
+
+def test_the_store_records_its_schema_version(tmp_path):
+    import sqlite3
+
+    from kubeness.store import SCHEMA_VERSION, Store
+
+    path = tmp_path / "incidents.db"
+    Store(path).close()
+    db = sqlite3.connect(path)
+    assert db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    Store(path).close()   # the same version opens again
+
+    # A file from before the version was recorded has the same tables and is adopted.
+    db.execute("PRAGMA user_version = 0")
+    db.commit()
+    Store(path).close()
+    assert db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+
+    # A file written by a newer build is refused instead of being read with the wrong schema.
+    db.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 1}")
+    db.commit()
+    db.close()
+    with pytest.raises(RuntimeError, match="newer KubeNess"):
+        Store(path)

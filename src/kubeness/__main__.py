@@ -36,6 +36,7 @@ class Observer:
         self.cfg = cfg
         self.stop = threading.Event()
         self.store = Store(cfg.observer.data_dir / "incidents.db")
+        self.store.fail_interrupted_investigations(utcnow())
         self.cache = ClusterCache(cfg.cluster, cfg.access.namespaces, cfg.observer.freshness_budget)
         client = OllamaClient(cfg.model.url, cfg.model.name, cfg.model.think, cfg.model.num_threads) if cfg.model.enabled else None
         shadows = {n: OllamaClient(cfg.model.url, n, cfg.model.think, cfg.model.num_threads)
@@ -67,13 +68,17 @@ class Observer:
         stale = sorted({s["namespace"] for s in sources if not s["fresh"] and s["kind"] != "events"})
         last = self.engine.last_tick
         loop_ok = last is not None and now - last <= 3 * self.cfg.observer.evaluation_interval
-        degraded = bool(stale) or not loop_ok
+        # A rule that keeps failing detects nothing: that is degraded, like a stale source.
+        rule_errors = dict(self.engine.rule_errors)
+        degraded = bool(stale) or not loop_ok or bool(rule_errors)
         if not self.engine_running:
             detail = "starting"
         elif stale:
             detail = f"stale observations in {', '.join(stale)}"
         elif not loop_ok:
             detail = "rule loop is behind"
+        elif rule_errors:
+            detail = f"failing rule: {', '.join(sorted(rule_errors))}"
         else:
             detail = "all sources fresh"
         return {
@@ -81,7 +86,7 @@ class Observer:
             "observerDetail": detail,
             "engineRunning": self.engine_running,
             "lastEvaluation": last.isoformat() if last else None,
-            "lastError": self.last_error,
+            "lastError": self.last_error or "; ".join(f"{r}: {e}" for r, e in sorted(rule_errors.items())) or None,
             "sources": sources,
             **self.analyzer.status(),
             **self.sender.status(),
@@ -104,6 +109,15 @@ class Observer:
                 self.last_error = f"{type(e).__name__}: {e}"
                 log.exception("rule evaluation failed")
             self.stop.wait(interval)
+
+
+def bind_host(cfg: Config) -> str:
+    """`ui.host` when set. Otherwise every interface in a cluster (kubelet probes reach
+    the pod by its IP) and loopback anywhere else: a developer machine must not offer
+    the UI to its whole network."""
+    if cfg.ui.host:
+        return cfg.ui.host
+    return "0.0.0.0" if os.environ.get("KUBERNETES_SERVICE_HOST") else "127.0.0.1"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -129,7 +143,7 @@ def main(argv: list[str] | None = None) -> int:
 
     app = create_app(cfg, obs.store, obs.status, asker=obs.asker, actions=obs.actions,
                      troubleshooter=obs.troubleshooter)
-    server = uvicorn.Server(uvicorn.Config(app, host="0.0.0.0", port=cfg.ui.port, log_level="warning"))
+    server = uvicorn.Server(uvicorn.Config(app, host=bind_host(cfg), port=cfg.ui.port, log_level="warning"))
     server.run()  # uvicorn handles SIGTERM/SIGINT and returns on shutdown
     obs.stop.set()
     obs.store.close()

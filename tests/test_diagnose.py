@@ -9,7 +9,7 @@ from kubeness.collector import LogCollector
 from kubeness.config import Config
 from kubeness.engine import Engine
 from kubeness.model import Analyzer, model_input
-from kubeness.redact import redact
+from kubeness.redact import redact, redact_obj
 from kubeness.store import Store
 from kubeness.web import create_app
 
@@ -35,6 +35,25 @@ def test_redaction_masks_credentials(text, leak):
 def test_redaction_keeps_ordinary_text():
     text = "fatal: config file /etc/app.yaml missing\nconnection refused to db:5432"
     assert redact(text) == (text, 0)
+
+
+def test_redaction_of_a_structure_masks_strings_and_values_under_credential_keys():
+    obj = {
+        "text": 'level=error token="abc123def" msg="x"',
+        "args": {"password": "hunter2", "DB_TOKEN": 12345, "apiKeys": ["k1", "k2"], "secretName": "db", "debug": True},
+        "nested": [{"message": "dsn postgres://app:s3cr3t@db/x"}, 7, None],
+        "restartCount": 3,
+    }
+    out = redact_obj(obj)
+    assert out == {
+        "text": 'level=error token="[REDACTED]" msg="x"',
+        "args": {"password": "[REDACTED]", "DB_TOKEN": "[REDACTED]", "apiKeys": ["[REDACTED]", "[REDACTED]"],
+                 "secretName": "db", "debug": True},
+        "nested": [{"message": "dsn postgres://app:[REDACTED]@db/x"}, 7, None],
+        "restartCount": 3,
+    }
+    assert obj["args"]["password"] == "hunter2", "the input is not changed"
+    assert json.loads(json.dumps(out)) == out
 
 
 # --- validation ------------------------------------------------------------------------------
@@ -216,6 +235,31 @@ def test_template_analysis_for_image_pull_and_readiness():
     (inc2,) = store2.list_incidents()
     a2 = store2.analyses(inc2.id)[0].payload
     assert any("readiness probe fails" in c["text"] for c in a2["possible_causes"])
+
+
+@pytest.mark.parametrize("message,first_cause", [
+    ('failed to resolve reference "registry.internal/web:1.2": failed to do request: Head '
+     '"https://registry.internal/v2/web/manifests/1.2": dial tcp: lookup registry.internal on 10.96.0.10:53: '
+     'no such host', "The node cannot reach the registry."),
+    ('failed to resolve reference "docker.io/library/web:9": docker.io/library/web:9: not found',
+     "The tag does not exist in the registry the workload uses."),
+    # A digest that happens to contain 403 is not an authorization failure.
+    ('Back-off pulling image "registry.internal/web@sha256:9403aa": dial tcp 10.0.0.9:443: i/o timeout',
+     "The node cannot reach the registry."),
+    ('failed to authorize: failed to fetch anonymous token: unexpected status: 403 Forbidden',
+     "The registry rejects the pull because credentials are missing or wrong."),
+])
+def test_image_pull_runbook_tells_dns_and_missing_tags_apart(message, first_cause):
+    cfg = Config()
+    store = Store(":memory:")
+    engine = Engine(cfg, store, LogCollector(cfg, FakeLogs()), Analyzer(cfg, store, None))
+    events = [event("Failed", message, "web-abc-1", at(1), "ev1")]
+    for t in range(0, 80, 10):
+        engine.tick(snap(at(t), pods=[pod(statuses=[waiting(reason="ImagePullBackOff", image_id="")])],
+                         events=events), at(t))
+    (inc,) = store.list_incidents()
+    causes = [c["text"] for c in store.analyses(inc.id)[0].payload["possible_causes"]]
+    assert causes == [first_cause]
 
 
 def test_model_input_is_bounded():

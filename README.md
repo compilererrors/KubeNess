@@ -97,6 +97,7 @@ The observer never starts against the current kubeconfig context. Outside a clus
 python3.12 -m venv .venv && .venv/bin/pip install -e '.[dev]'
 make test              # ruff and unit tests, including simulated KPI benchmarks
 make kpi               # KPI benchmarks only
+make constraints       # pin the image's dependencies to the versions in .venv
 ```
 
 Run the observer locally against the lab cluster:
@@ -104,6 +105,8 @@ Run the observer locally against the lab cluster:
 ```bash
 .venv/bin/python -m kubeness --config config/example.yaml
 ```
+
+Outside a cluster the UI listens on 127.0.0.1 only; `ui.host` changes that.
 
 KPI benchmarks (`tests/kpi/` and KPI calls in the e2e suite) have measurable targets and are printed as a table at the end of the pytest output, or as JSON with `KUBENESS_KPI_REPORT=<file>`. Timings are measured again on a miss and marked NOISY when the machine is overloaded.
 
