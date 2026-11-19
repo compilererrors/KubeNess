@@ -60,8 +60,8 @@ Template-analysen fungerar utan modell. Med `model.enabled: true` körs en lokal
 |---|---|---|
 | `0.6b` | qwen3:0.6b | 1 GB |
 | `1.7b` | qwen3:1.7b | 2,5 GB |
-| `4b` | qwen3:4b | 4,5 GB |
-| `tiered` | 0.6b för alla incidents, 1.7b enligt regel | 3,5 GB |
+| `4b` | qwen3:4b, bara för jämförelser: för långsam på CPU (p95 31–40 s), kräver GPU | 3,6 GB |
+| `tiered` (default i labbet) | 0.6b för alla incidents, 1.7b enligt regel | 3,5 GB |
 
 ```bash
 make model SIZE=1.7b     # bygger model-image med den modellen och uppgraderar releasen
@@ -118,7 +118,7 @@ Kräver Docker, kind, kubectl och Helm.
 make cluster        # kind utan default CNI
 make cilium         # Cilium verkställer NetworkPolicy
 make image          # observer-image, laddas in i kind
-make model-image    # CPU-only Ollama med qwen3:0.6b inbakad
+make model-image    # CPU-only Ollama med qwen3:0.6b och qwen3:1.7b inbakade
 make sink           # webhook-mottagare i namespace lab-sink
 make install        # Helm release med lab/values-lab.yaml
 make faults         # kända fel och en frisk kontroll i namespace lab
@@ -128,7 +128,7 @@ make e2e            # bygger om, deployar och kör e2e-sviten mot kind
 make model-compare  # template-only mot modellerna i model-podden
 ```
 
-`make install` och `make e2e` tar `MODEL_PROFILE=<profil>` för att behålla en modellprofil, t.ex. `make e2e MODEL_PROFILE=tiered`.
+`make install` och `make e2e` använder profilen `tiered`; `MODEL_PROFILE=<profil>` väljer en annan, t.ex. `make e2e MODEL_PROFILE=1.7b`, och `MODEL_PROFILE=` chartets enda 0.6b-modell.
 
 Utan Cilium behöver chartet API-serverns adress för egress: `make api-server-cidr` och sedan `--set networkPolicy.apiServer.cidrs={<adress>/32}`.
 

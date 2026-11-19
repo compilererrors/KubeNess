@@ -60,8 +60,8 @@ The template analysis works without a model. With `model.enabled: true` a local 
 |---|---|---|
 | `0.6b` | qwen3:0.6b | 1 GB |
 | `1.7b` | qwen3:1.7b | 2.5 GB |
-| `4b` | qwen3:4b | 4.5 GB |
-| `tiered` | 0.6b for every incident, 1.7b by rule | 3.5 GB |
+| `4b` | qwen3:4b, comparisons only: too slow on CPU (p95 31–40 s), needs a GPU | 3.6 GB |
+| `tiered` (lab default) | 0.6b for every incident, 1.7b by rule | 3.5 GB |
 
 ```bash
 make model SIZE=1.7b     # builds a model image with that model and upgrades the release
@@ -118,7 +118,7 @@ Requires Docker, kind, kubectl and Helm.
 make cluster        # kind without the default CNI
 make cilium         # Cilium enforces NetworkPolicy
 make image          # observer image, loaded into kind
-make model-image    # CPU-only Ollama with qwen3:0.6b built in
+make model-image    # CPU-only Ollama with qwen3:0.6b and qwen3:1.7b built in
 make sink           # webhook receiver in namespace lab-sink
 make install        # Helm release with lab/values-lab.yaml
 make faults         # known faults and a healthy control in namespace lab
@@ -128,7 +128,7 @@ make e2e            # rebuilds, deploys and runs the e2e suite against kind
 make model-compare  # template-only against the models in the model pod
 ```
 
-`make install` and `make e2e` take `MODEL_PROFILE=<profile>` to keep a model profile, e.g. `make e2e MODEL_PROFILE=tiered`.
+`make install` and `make e2e` use the `tiered` profile; `MODEL_PROFILE=<profile>` picks another one, e.g. `make e2e MODEL_PROFILE=1.7b`, and `MODEL_PROFILE=` the chart's single 0.6b model.
 
 Without Cilium the chart needs the API server's address for egress: `make api-server-cidr` and then `--set networkPolicy.apiServer.cidrs={<address>/32}`.
 

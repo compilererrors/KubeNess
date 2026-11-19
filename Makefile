@@ -7,8 +7,9 @@ HELM     := helm --kube-context $(CONTEXT)
 IMAGE    := kubeness:0.1.0
 # Models baked into the model image. Pick what the machine can afford, e.g.
 #   make model-image MODELS="qwen3:0.6b qwen3:1.7b" MODEL_TAG=qwen3-compare
-MODELS      ?= qwen3:0.6b
-MODEL_TAG   ?= qwen3-0.6b
+# The default is the tiered pair that the default MODEL_PROFILE uses.
+MODELS      ?= qwen3:0.6b qwen3:1.7b
+MODEL_TAG   ?= qwen3-0.6b-1.7b
 MODEL_IMAGE := kubeness-model:$(MODEL_TAG)
 CILIUM   := 1.20.4
 
@@ -39,8 +40,9 @@ verify:
 # Switch the model size: builds the image with that model and upgrades the release.
 #   make model SIZE=1.7b      (profiles in lab/models/: 0.6b, 1.7b, 4b)
 SIZE ?= 0.6b
-# A profile from lab/models/ that install (and so e2e) keeps, e.g. MODEL_PROFILE=tiered.
-MODEL_PROFILE ?=
+# The profile from lab/models/ that install (and so e2e) uses. Tiered by default: 0.6b for
+# every incident, 1.7b by rule (B32). MODEL_PROFILE= installs the chart's single 0.6b model.
+MODEL_PROFILE ?= tiered
 PROFILE_VALUES := $(if $(MODEL_PROFILE),-f lab/models/$(MODEL_PROFILE).yaml)
 model:
 	$(MAKE) model-image MODELS="qwen3:$(SIZE)" MODEL_TAG=qwen3-$(SIZE)

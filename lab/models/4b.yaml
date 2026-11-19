@@ -1,5 +1,8 @@
-# qwen3:4b: ~2.5 GB of weights, about 3.5-4.5 GB in use. Needs a Docker VM with room
-# for it next to kind; expect several times the latency of 0.6b on CPU.
+# qwen3:4b: for comparisons only, not for running on CPU. ~2.5 GB of weights, 3.6 GB in use.
+# Measured 2026-11-19 on 6 incident fixtures: no unsupported causes, like 1.7b, but p50
+# 11.6-13.7 s and p95 31-40 s against a target of 10 / 20 s, and over 180 s per
+# troubleshooting step. It needs a GPU, and lab/model.Dockerfile builds a CPU-only
+# runtime (the GPU libraries are removed), so a GPU node needs another model image.
 model:
   name: qwen3:4b
   image: {tag: qwen3-4b}
