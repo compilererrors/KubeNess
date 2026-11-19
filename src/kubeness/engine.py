@@ -12,7 +12,7 @@ from .config import Config
 from .lifecycle import Incident, State, Transition, fingerprint, step
 from .rules import INHIBITED_BY, SEVERITY_RANK, Evaluation, build_rules
 from .snapshot import Snapshot, WorkloadRef, controller_owner, meta, parse_time
-from .redact import redact
+from .redact import redact, redact_obj
 from .store import EvidenceItem, Store
 
 if TYPE_CHECKING:
@@ -54,6 +54,10 @@ class Engine:
         self.last_tick: datetime | None = None
         # incident id -> remaining attempts to collect logs that were missing at firing
         self.log_retries: dict[str, int] = {}
+        # fingerprint -> when the rule stopped seeing the workload of an open incident
+        self.absent_since: dict[str, datetime] = {}
+        # rule id -> error of its last evaluation, while it keeps failing (shown in the status)
+        self.rule_errors: dict[str, str] = {}
         self.last_prune: datetime | None = None
 
     def _load_recent_resolved(self, now: datetime) -> None:
@@ -67,8 +71,19 @@ class Engine:
     def tick(self, snapshot: Snapshot, now: datetime) -> list[Transition]:
         self._load_recent_resolved(now)
         evals: dict[str, Evaluation] = {}
+        failed: set[str] = set()
         for rule in self.rules:
-            for ev in rule.evaluate(snapshot, now):
+            try:
+                found = rule.evaluate(snapshot, now)
+            except Exception as e:
+                # One rule tripping over an object must not stop the others. Its own
+                # incidents are left as they are until it evaluates again.
+                log.exception("rule %s failed", rule.rule_id)
+                failed.add(rule.rule_id)
+                self.rule_errors[rule.rule_id] = f"{type(e).__name__}: {str(e)[:200]}"
+                continue
+            self.rule_errors.pop(rule.rule_id, None)
+            for ev in found:
                 evals[fingerprint(snapshot.cluster, ev.workload, ev.rule_id)] = ev
         self._inhibit(evals)
 
@@ -78,14 +93,32 @@ class Engine:
             inc = self.open.get(fp)
             ns = ev.workload.namespace if ev else inc.workload.namespace
             rule_id = ev.rule_id if ev else inc.rule_id
+            if rule_id in failed:
+                self.absent_since.pop(fp, None)
+                continue
             if ns in snapshot.stale_namespaces and rule_id != "observerDegraded":
                 # No trustworthy observation: freeze the incident instead of
                 # resolving it because the workload seems to have disappeared.
                 if inc is not None and not inc.stale:
                     inc.stale = True
                     self.store.save_incident(inc)
+                self.absent_since.pop(fp, None)
                 continue
+            if ev is None:
+                # No evaluation: the workload is deleted, scaled to zero, or between
+                # pods. A Recreate rollout or a replaced StatefulSet pod looks the same
+                # for a few seconds, so the incident is only closed as gone when the
+                # absence lasts the settle period.
+                since = self.absent_since.setdefault(fp, now)
+                if now - since < self.cfg.alarms.recovery_settle:
+                    continue
+            self.absent_since.pop(fp, None)
             current = inc or self.recent_resolved.get(fp)
+            if ev is not None and (ev.matching or current is not None):
+                # Rule facts quote the cluster (waiting messages, scheduler text, labels).
+                # Mask them here, before they reach the incident, its evidence, the
+                # activity log or a notification. Healthy workloads are skipped.
+                ev.reason, ev.details = redact(ev.reason)[0], redact_obj(ev.details)
             updated, ts = step(snapshot.cluster, current, ev, now, self.cfg.alarms)
             if updated is not None and ev is not None and ev.severity and updated.is_open and \
                     SEVERITY_RANK.get(ev.severity, 0) > SEVERITY_RANK.get(updated.severity, 0):
@@ -204,15 +237,14 @@ class Engine:
 
     def _collect_evidence(self, inc: Incident, ev: Evaluation, snapshot: Snapshot, now: datetime) -> None:
         """Store evidence when it is collected; events expire from the API after about an hour."""
-        n = self.store.next_evidence_index(inc.id)
-        items = [EvidenceItem(f"e{n}", now, "rule", ev.reason or inc.reason, {"rule": ev.rule_id, **ev.details})]
+        # Refs are left empty: the store numbers the items when it inserts them.
+        items = [EvidenceItem("", now, "rule", ev.reason or inc.reason, {"rule": ev.rule_id, **ev.details})]
         for e in related_events(snapshot, ev.workload, ev.pods, self.cfg.collection.max_events):
-            n += 1
             obj = e.get("involvedObject") or {}
             t = _event_time(e)
             items.append(
                 EvidenceItem(
-                    f"e{n}",
+                    "",
                     now,
                     "event",
                     f"{e.get('type', '')} {e.get('reason', '')}: {obj.get('kind', '')}/{obj.get('name', '')}",
@@ -228,7 +260,7 @@ class Engine:
             )
         if self.collector is not None:
             collected = self.collector.collect(ev)
-            items += as_evidence(collected, n + 1, now)
+            items += as_evidence(collected, now)
             if collected.gaps and not collected.items and self.cfg.access.logs_allowed(ev.workload.namespace) and \
                     ev.rule_id in ("restarts", "readiness"):
                 self.log_retries[inc.id] = LOG_RETRIES
@@ -244,7 +276,7 @@ class Engine:
             collected.items = [i for i in collected.items if i[0] == "log"]  # only logs were missing
         if collected is not None and collected.items:
             collected.gaps = []
-            self.store.add_evidence(inc.id, as_evidence(collected, self.store.next_evidence_index(inc.id), now))
+            self.store.add_evidence(inc.id, as_evidence(collected, now))
             self.store.add_activity(inc.id, now, "evidence", "Logs collected after firing")
             self.log_retries.pop(inc.id, None)
             if self.analyzer is not None:

@@ -2,7 +2,7 @@
 {{- $name := printf "%s-executor" (include "kubeness.fullname" .) }}
 {{- $tokenName := printf "%s-token" $name }}
 {{- $existing := lookup "v1" "Secret" .Release.Namespace $tokenName }}
-# Optional executor: the only writer, for exactly one named action. Its token is
+# Optional executor: the only writer, for the named actions only. Its token is
 # separate from the notifier's and mounted only in observer and executor.
 apiVersion: v1
 kind: Secret

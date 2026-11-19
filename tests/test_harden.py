@@ -37,6 +37,54 @@ def test_h01_no_endpoint_returns_secrets_or_cluster_data():
     kpi("H01", "GET endpoints returning a masked secret", leaks, "count", eq=0)
 
 
+def test_rule_facts_are_masked_before_they_are_stored():
+    """Waiting messages and scheduler text come from the cluster like logs do. They are
+    masked before the incident, its evidence or its activity is written."""
+    import json
+
+    from kubeness.config import Config
+    from kubeness.engine import Engine
+    from kubeness.store import Store
+    from factories import at, pod, snap
+    from test_engine import crashloop_status
+
+    secret = "hunter2-in-a-waiting-message"
+
+    def status(t):
+        s = crashloop_status(t)
+        if "waiting" in s["state"]:
+            s["state"]["waiting"]["message"] = f'exec: "/bin/app --db-password={secret}": not found'
+        return s
+
+    cfg = Config.model_validate({"ui": {"allowedHosts": ["testserver"]}})
+    store = Store(":memory:")
+    engine = Engine(cfg, store)
+    for t in range(0, 300, 10):
+        engine.tick(snap(at(t), pods=[pod(statuses=[status(t)])]), at(t))
+    (inc,) = engine.open.values()
+    waiting_messages = [c["waitingMessage"] for e in store.evidence(inc.id) if e.kind == "rule"
+                        for c in e.payload["containers"] if c.get("waitingMessage")]
+    assert waiting_messages and all("--db-password=[REDACTED]" in m for m in waiting_messages)
+    client = TestClient(create_app(cfg, store, lambda: {"engineRunning": True, "observer": "ok"}))
+    everything = json.dumps([inc.details, store.get_incident(inc.id).details,
+                             [e.payload for e in store.evidence(inc.id)],
+                             [a.message for a in store.activity(inc.id)]])
+    everything += client.get(f"/api/incidents/{inc.id}").text + client.get(f"/incidents/{inc.id}").text
+    assert secret not in everything
+
+
+def test_the_ui_binds_loopback_outside_a_cluster(monkeypatch):
+    from kubeness.__main__ import bind_host
+    from kubeness.config import Config
+
+    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+    assert bind_host(Config()) == "127.0.0.1"
+    assert bind_host(Config.model_validate({"ui": {"host": "0.0.0.0"}})) == "0.0.0.0"
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.96.0.1")
+    assert bind_host(Config()) == "0.0.0.0", "kubelet probes reach the pod by its IP"
+    assert bind_host(Config.model_validate({"ui": {"host": "127.0.0.1"}})) == "127.0.0.1"
+
+
 def test_web_and_notifier_have_no_kubernetes_client():
     """Only the observer's watcher and collector talk to the API; the UI and the
     notifier cannot, whatever a request asks for."""

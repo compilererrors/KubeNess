@@ -1,8 +1,9 @@
 FROM python:3.12-slim AS build
 WORKDIR /src
-COPY pyproject.toml ./
+COPY pyproject.toml constraints.txt ./
 COPY src ./src
-RUN pip install --no-cache-dir --prefix=/install .
+# constraints.txt pins every dependency to the version the tests ran with (make constraints).
+RUN pip install --no-cache-dir --prefix=/install -c constraints.txt .
 
 FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1

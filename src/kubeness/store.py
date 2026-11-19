@@ -16,6 +16,11 @@ from pathlib import Path
 from .lifecycle import Incident, State
 from .snapshot import WorkloadRef
 
+# Recorded in the file as PRAGMA user_version. When a table changes, raise this and add
+# the step that brings an older file up to date in Store._open_schema: SCHEMA only
+# creates what is missing and never alters a table that already exists on a volume.
+SCHEMA_VERSION = 1
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS incidents (
     id TEXT PRIMARY KEY,
@@ -290,7 +295,17 @@ class Store:
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute("PRAGMA foreign_keys=ON")
+        self._open_schema(path)
+
+    def _open_schema(self, path: str | Path) -> None:
+        version = self._db.execute("PRAGMA user_version").fetchone()[0]
+        if version > SCHEMA_VERSION:
+            self._db.close()
+            raise RuntimeError(f"{path} has schema version {version}, written by a newer KubeNess; "
+                               f"this build reads up to version {SCHEMA_VERSION}")
         self._db.executescript(SCHEMA)
+        # 0 is a new file, or one from before the version was recorded: the same tables.
+        self._db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     def close(self) -> None:
         with self._lock:
@@ -385,20 +400,49 @@ class Store:
         return self._incident(rows[0]) if rows else None
 
     # --- evidence and activity -------------------------------------------------
-    def add_evidence(self, incident_id: str, items: list[EvidenceItem]) -> None:
+    def add_evidence(self, incident_id: str, items: list[EvidenceItem]) -> list[str]:
+        """Store the items and return their refs.
+
+        An item without a ref gets the next free e<n> here, under the lock. The rule
+        loop and a troubleshooting run add evidence to the same incident from different
+        threads; numbering outside the insert could hand both the same ref. A ref that
+        already exists is an error, never a silent overwrite: claims cite these refs.
+        """
         with self._lock:
-            self._db.executemany(
-                "INSERT OR REPLACE INTO evidence (incident_id, ref, collected_at, kind, summary, payload)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
-                [
-                    (incident_id, e.ref, e.collected_at.isoformat(), e.kind, e.summary, json.dumps(e.payload, sort_keys=True))
-                    for e in items
-                ],
-            )
+            n = self._next_evidence_number(incident_id)
+            for e in items:
+                if not e.ref:
+                    e.ref = f"e{n}"
+                    n += 1
+            self._db.execute("BEGIN")
+            try:
+                self._db.executemany(
+                    "INSERT INTO evidence (incident_id, ref, collected_at, kind, summary, payload)"
+                    " VALUES (?, ?, ?, ?, ?, ?)",
+                    [
+                        (incident_id, e.ref, e.collected_at.isoformat(), e.kind, e.summary,
+                         json.dumps(e.payload, sort_keys=True))
+                        for e in items
+                    ],
+                )
+            except BaseException:
+                self._db.execute("ROLLBACK")
+                raise
+            self._db.execute("COMMIT")
+        return [e.ref for e in items]
+
+    def _next_evidence_number(self, incident_id: str) -> int:
+        """Call with the lock held."""
+        row = self._db.execute(
+            "SELECT COALESCE(MAX(CAST(SUBSTR(ref, 2) AS INTEGER)), 0) AS n FROM evidence WHERE incident_id = ?",
+            (incident_id,)).fetchone()
+        return row["n"] + 1
 
     def next_evidence_index(self, incident_id: str) -> int:
-        rows = self._query("SELECT COUNT(*) AS n FROM evidence WHERE incident_id = ?", (incident_id,))
-        return rows[0]["n"] + 1
+        """The number the next added item gets, for reading only: `add_evidence`
+        assigns the refs itself."""
+        with self._lock:
+            return self._next_evidence_number(incident_id)
 
     def evidence(self, incident_id: str) -> list[EvidenceItem]:
         rows = self._query(
@@ -640,6 +684,13 @@ class Store:
                 " conclusion = excluded.conclusion, error = excluded.error",
                 (i.id, i.incident_id, i.started_at.isoformat(), _ts(i.finished_at), i.status, i.model, int(i.think),
                  json.dumps(i.steps), json.dumps(i.conclusion), i.error))
+
+    def fail_interrupted_investigations(self, now: datetime) -> int:
+        """A run that was in progress when the observer stopped will never finish."""
+        with self._lock:
+            return self._db.execute(
+                "UPDATE investigations SET status = 'failed', finished_at = ?, error = 'interrupted by a restart'"
+                " WHERE status = 'running'", (now.isoformat(),)).rowcount
 
     def investigations(self, incident_id: str) -> list[Investigation]:
         rows = self._query("SELECT * FROM investigations WHERE incident_id = ? ORDER BY started_at DESC",

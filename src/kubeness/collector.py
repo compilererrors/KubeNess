@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Protocol
 
 from .config import Config
-from .redact import redact
+from .redact import redact, redact_obj
 from .rules import Evaluation
 from .store import EvidenceItem
 
@@ -229,13 +229,13 @@ def kube_read_services():
     return read
 
 
-def as_evidence(collected: Collected, start: int, now: datetime) -> list[EvidenceItem]:
-    out = []
-    n = start
-    for kind, summary, payload in collected.items:
-        out.append(EvidenceItem(f"e{n}", now, kind, summary, payload))
-        n += 1
-    for gap in collected.gaps:
-        out.append(EvidenceItem(f"e{n}", now, "gap", gap, {}))
-        n += 1
+def as_evidence(collected: Collected, now: datetime) -> list[EvidenceItem]:
+    """Evidence items without refs; the store numbers them when they are added.
+
+    Log text is masked where it is fetched (the summary counts the masked values);
+    every other summary and payload is masked here, so nothing collected is stored
+    unmasked."""
+    out = [EvidenceItem("", now, kind, redact(summary)[0], payload if kind == "log" else redact_obj(payload))
+           for kind, summary, payload in collected.items]
+    out += [EvidenceItem("", now, "gap", redact(gap)[0], {}) for gap in collected.gaps]
     return out

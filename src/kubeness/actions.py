@@ -53,6 +53,9 @@ class ActionClient:
     def request(self, inc: Incident, action: str, now: datetime, revision: int | None = None) -> ActionRecord:
         if action not in self.cfg.actions.allowed:
             raise ValueError(f"action {action} is not allowed")
+        if not inc.is_open:
+            # The UI only offers actions on open incidents; a direct request gets the same answer.
+            raise ValueError(f"incident {inc.id} is resolved; actions apply to open incidents only")
         if not self.cfg.access.actions_allowed(inc.workload.namespace):
             silo = self.cfg.access.silo_for(inc.workload.namespace)
             raise ValueError(f"actions need the remediate profile; namespace {inc.workload.namespace} is in silo "

@@ -14,7 +14,7 @@ from kubeness.executor import PatchError, create_executor_app
 from kubeness.store import Store
 from kubeness.web import create_app
 
-from factories import at, deployment, pod, snap
+from factories import at, deployment, pod, running, snap
 from kpi_report import kpi
 from test_engine import crashloop_status
 
@@ -60,6 +60,23 @@ def test_x02_unknown_unauthenticated_or_out_of_scope_requests_are_refused(body, 
     r = c.post("/v1/actions", json=body, headers=headers)
     assert r.status_code == code
     assert patcher.calls == []
+
+
+def test_the_patch_does_not_block_the_event_loop():
+    import asyncio
+
+    class Where(Patcher):
+        def restart(self, namespace, name, at_iso):
+            try:
+                asyncio.get_running_loop()
+                self.calls.append("event loop")
+            except RuntimeError:
+                self.calls.append("worker thread")
+            return 7
+
+    patcher, c = executor(Where())
+    assert c.post("/v1/actions", json=request(), headers=AUTH).status_code == 200
+    assert patcher.calls == ["worker thread"]
 
 
 def test_x02_kpi_no_patch_for_refused_requests():
@@ -175,6 +192,29 @@ def test_only_deployments_can_be_restarted():
     r = web.post("/incidents/inc-obs/actions/restart-deployment", data={"csrf_token": token},
                  headers={"origin": "http://testserver"})
     assert r.status_code == 400 and actions.client.calls == []
+
+
+def test_a_resolved_incident_takes_no_action_even_by_direct_request():
+    """The UI hides the button on a resolved incident; the server must refuse the same request."""
+    _, store, engine, inc, web, actions = env()
+    for t in range(300, 400, 10):   # fixed: healthy for the whole recovery window
+        engine.tick(snap(at(t), pods=[pod(statuses=[running(started=at(300), restarts=4)])]), at(t))
+    assert store.get_incident(inc.id).state.value == "resolved"
+    assert "Approve restart-deployment" not in web.get(f"/incidents/{inc.id}").text
+    r = approve(web, inc)
+    assert r.status_code == 400 and "resolved" in r.json()["detail"]
+    assert actions.client.calls == [] and store.actions(inc.id) == []
+
+
+def test_a_revision_that_is_not_a_plain_number_is_ignored_not_a_server_error():
+    cfg, store, _, inc, web, actions = env()
+    cfg.actions.allowed.append("rollback-deployment")
+    html = web.get(f"/incidents/{inc.id}").text
+    token = re.search(r'name="csrf_token" value="([^"]+)"', html).group(1)
+    r = web.post(f"/incidents/{inc.id}/actions/rollback-deployment", data={"csrf_token": token, "revision": "²"},
+                 headers={"origin": "http://testserver"})
+    assert r.status_code == 400 and "revision" in r.json()["detail"]
+    assert actions.client.calls == []
 
 
 # --- B31 rollback-deployment --------------------------------------------------------------------------

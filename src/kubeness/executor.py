@@ -1,4 +1,4 @@
-"""Executor: the only component with write access, and only for one named action.
+"""Executor: the only component with write access, and only for two named actions.
 
     python -m kubeness.executor --config /etc/kubeness/executor.yaml
 
@@ -28,6 +28,7 @@ import yaml
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from starlette.concurrency import run_in_threadpool
 
 log = logging.getLogger("kubeness.executor")
 
@@ -134,10 +135,11 @@ def create_executor_app(patcher: Patcher, token: Callable[[], str], namespaces: 
             return JSONResponse({"status": "forbidden", "error": "namespace not allowed"}, status_code=403)
         when = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         try:
+            # The API calls block; keep them off the event loop so the probe is answered.
             if isinstance(params, RollbackParams):
-                generation = patcher.rollback(params.namespace, params.name, params.revision)
+                generation = await run_in_threadpool(patcher.rollback, params.namespace, params.name, params.revision)
             else:
-                generation = patcher.restart(params.namespace, params.name, when)
+                generation = await run_in_threadpool(patcher.restart, params.namespace, params.name, when)
         except PatchError as e:
             audit(id=req.id, action=req.action, incident=req.incident, result="failed", error=str(e),
                   **params.model_dump())

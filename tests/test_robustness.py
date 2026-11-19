@@ -26,6 +26,109 @@ def two_workloads(t):
                 replicasets=[replicaset(), replicaset("api-rs", "rs-api", "api", "dep-api")])
 
 
+def test_evidence_refs_are_unique_when_two_threads_add_to_one_incident():
+    """The rule loop and a troubleshooting run number evidence for the same incident;
+    the store hands out the refs, so neither can overwrite the other."""
+    import threading
+
+    from kubeness.lifecycle import Incident
+    from kubeness.snapshot import WorkloadRef
+    from kubeness.store import EvidenceItem
+
+    store = Store(":memory:")
+    store.save_incident(Incident("inc-1", "fp", "restarts", "lab", WorkloadRef("Deployment", "lab", "web", "u1"),
+                                 "warning", State.FIRING, "r", at(0), at(0)))
+    refs: dict[str, list[str]] = {"log": [], "describe": []}
+
+    def writer(kind: str) -> None:
+        for i in range(200):
+            refs[kind] += store.add_evidence("inc-1", [EvidenceItem("", at(i), kind, f"{kind} {i}", {})])
+
+    threads = [threading.Thread(target=writer, args=(k,)) for k in refs]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    stored = store.evidence("inc-1")
+    assert len(stored) == 400 and len({e.ref for e in stored}) == 400
+    assert {e.ref for e in stored if e.kind == "log"} == set(refs["log"])
+    assert sorted(int(e.ref[1:]) for e in stored) == list(range(1, 401))
+
+
+def test_an_existing_evidence_ref_is_never_overwritten():
+    import sqlite3
+
+    import pytest
+
+    from kubeness.lifecycle import Incident
+    from kubeness.snapshot import WorkloadRef
+    from kubeness.store import EvidenceItem
+
+    store = Store(":memory:")
+    store.save_incident(Incident("inc-1", "fp", "restarts", "lab", WorkloadRef("Deployment", "lab", "web", "u1"),
+                                 "warning", State.FIRING, "r", at(0), at(0)))
+    assert store.add_evidence("inc-1", [EvidenceItem("", at(0), "rule", "first", {})]) == ["e1"]
+    with pytest.raises(sqlite3.IntegrityError):
+        store.add_evidence("inc-1", [EvidenceItem("", at(1), "log", "second", {}),
+                                     EvidenceItem("e1", at(1), "log", "collides", {})])
+    assert [(e.ref, e.summary) for e in store.evidence("inc-1")] == [("e1", "first")], "the batch is rolled back"
+
+
+def test_a_failing_rule_does_not_stop_the_others_or_close_its_own_incidents():
+    cfg = Config()
+    store = Store(":memory:")
+    engine = Engine(cfg, store)
+    for t in range(0, 300, 10):
+        engine.tick(snap(at(t), **two_workloads(t)), at(t))
+    assert {i.rule_id: i.state for i in store.list_incidents()} == {"restarts": State.FIRING, "imagePull": State.FIRING}
+
+    def boom(snapshot, now):
+        raise RuntimeError("rule bug")
+
+    restarts = next(r for r in engine.rules if r.rule_id == "restarts")
+    restarts.evaluate = boom
+    # The image is fixed while the restart rule is broken: the other rule still sees it.
+    fixed = two_workloads(300)
+    fixed["pods"][1] = pod("api-rs-1", "pod-api", [running(started=at(300))],
+                           owner={"kind": "ReplicaSet", "name": "api-rs", "uid": "rs-api", "controller": True})
+    for t in range(300, 420, 10):
+        engine.tick(snap(at(t), **fixed), at(t))
+    states = {i.rule_id: i.state for i in store.list_incidents()}
+    assert states["imagePull"] is State.RESOLVED, "the other rules keep evaluating"
+    assert states["restarts"] is State.FIRING, "no evaluation is not the same as a removed workload"
+    assert engine.last_tick == at(410) and "rule bug" in engine.rule_errors["restarts"]
+
+    del restarts.evaluate
+    engine.tick(snap(at(420), **two_workloads(420)), at(420))
+    assert engine.rule_errors == {}
+
+
+def test_a_failing_rule_marks_the_observer_degraded(tmp_path):
+    from kubeness.__main__ import Observer
+    from kubeness.snapshot import utcnow
+
+    obs = Observer(Config.model_validate({"observer": {"dataDir": str(tmp_path)}}))
+    try:
+        now = utcnow()
+        for kind in ("pods", "replicasets", "deployments", "events"):
+            obs.cache.replace("lab", kind, [], now)
+        obs.engine_running = True
+        obs.engine.tick(obs.cache.snapshot(now), now)
+        assert obs.status()["observer"] == "ok" and obs.healthy()
+
+        def boom(snapshot, now):
+            raise RuntimeError("rule bug")
+
+        obs.engine.rules[0].evaluate = boom
+        obs.engine.tick(obs.cache.snapshot(now), now)
+        st = obs.status()
+        assert (st["observer"], st["observerDetail"]) == ("degraded", "failing rule: restarts")
+        assert st["lastError"] == "restarts: RuntimeError: rule bug"
+        assert not obs.healthy(), "the heartbeat stops, so the dead man's switch notices"
+    finally:
+        obs.store.close()
+
+
 class ExplodingCollector(LogCollector):
     def collect(self, ev):
         if ev.workload.name == "web":

@@ -10,6 +10,10 @@ import re
 
 MASK = "[REDACTED]"
 
+# Names under which a value is a credential, in running text and as a key in a structure.
+_KEYWORD = r"(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|credential)s?"
+_SECRET_KEY = re.compile(r"(?i)" + _KEYWORD + r"$")
+
 # (pattern, replacement, hints): a pattern runs only when one of its lower-case hints
 # occurs in the text. Most log text has none, which keeps masking cheap.
 _PATTERNS: list[tuple[re.Pattern, str, tuple[str, ...]]] = [
@@ -25,7 +29,7 @@ _PATTERNS: list[tuple[re.Pattern, str, tuple[str, ...]]] = [
         re.compile(
             # No prefix group: matching from the keyword (DB_PASSWORD matches at PASSWORD)
             # avoids backtracking over every word in the text.
-            r"(?i)((?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|credential)s?)"
+            r"(?i)(" + _KEYWORD + r")"
             r"([\"']?\s*[:=]\s*[\"']?)([^\s\"',;&]+)"
         ),
         r"\1\2" + MASK,
@@ -44,3 +48,22 @@ def redact(text: str) -> tuple[str, int]:
         text, n = pattern.subn(repl, text)
         total += n
     return text, total
+
+
+def redact_obj(obj: object, _under_secret_key: bool = False) -> object:
+    """Return a masked copy of a JSON-like structure.
+
+    Every string is masked like text, and a value stored under a credential-like key
+    (password, apiKey, DB_TOKEN ...) is masked whole. This walks the structure instead
+    of masking its JSON text: a pattern that ends inside an escaped quote would leave
+    text that no longer parses.
+    """
+    if isinstance(obj, dict):
+        return {k: redact_obj(v, isinstance(k, str) and _SECRET_KEY.search(k) is not None) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [redact_obj(v, _under_secret_key) for v in obj]
+    if _under_secret_key and isinstance(obj, (str, int, float)) and not isinstance(obj, bool) and obj != "":
+        return MASK
+    if isinstance(obj, str):
+        return redact(obj)[0]
+    return obj

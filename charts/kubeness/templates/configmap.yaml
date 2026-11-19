@@ -23,6 +23,7 @@ data:
       resync: {{ .Values.observer.resync }}
       watchTimeout: {{ .Values.observer.watchTimeout }}
       freshnessBudget: {{ .Values.observer.freshnessBudget }}
+      retention: {{ .Values.observer.retention }}
       dataDir: /data
     model:
       enabled: {{ .Values.model.enabled }}

@@ -20,6 +20,10 @@ metadata:
     app.kubernetes.io/component: model
 spec:
   replicas: 1
+  # One model pod at a time: a rolling update needs CPU and memory for two copies
+  # of the weights, and stalls on a node that only has room for one.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       {{- include "kubeness.modelSelector" . | nindent 6 }}

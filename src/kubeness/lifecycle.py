@@ -4,7 +4,8 @@
 * firing:     the incident is active
 * recovering: the workload has been healthy for the settle period; waiting for
               the full recovery window
-* resolved:   healthy for the whole recovery window, or the workload is gone
+* resolved:   healthy for the whole recovery window, or the workload has been
+              gone for the settle period
 
 A failure during recovering returns the incident to firing without a new
 notification. A firing signal within the reopen window after resolved reopens
@@ -64,6 +65,8 @@ class Transition:
     new: State | None  # None means a pending incident was cancelled
     kind: str
     message: str
+    # Resolved because the workload is gone, not because it recovered.
+    gone: bool = False
 
 
 def fingerprint(cluster: str, wl: WorkloadRef, rule_id: str) -> str:
@@ -99,7 +102,8 @@ def step(
     """Advance one incident (or a candidate for one) by a single evaluation.
 
     `inc` is the open incident for the fingerprint, or the most recent resolved
-    one, or None. `ev` is None when the rule no longer sees the workload.
+    one, or None. `ev` is None when the rule no longer sees the workload; the
+    engine passes that on only once the absence has lasted the settle period.
     """
     # --- no open incident -------------------------------------------------
     if inc is None or inc.state is State.RESOLVED:
@@ -142,7 +146,8 @@ def step(
         old = inc.state
         inc.state = State.RESOLVED
         inc.resolved_at = now
-        return inc, [Transition(inc, old, State.RESOLVED, "resolved", "Resolved: workload no longer present")]
+        return inc, [Transition(inc, old, State.RESOLVED, "resolved", "Resolved: workload no longer present",
+                                gone=True)]
 
     # --- pending -----------------------------------------------------------
     if inc.state is State.PENDING:

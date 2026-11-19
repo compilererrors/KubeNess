@@ -28,7 +28,7 @@ from .config import Config
 from .engine import related_events
 from .lifecycle import Incident
 from .notify import template_for
-from .redact import redact
+from .redact import redact, redact_obj
 from .snapshot import Snapshot, WorkloadRef, condition, containers, controller_owner, meta, utcnow
 from .store import EvidenceItem, Investigation, Store
 
@@ -73,11 +73,6 @@ def step_schema(tools: list[str]) -> dict:
 
 class Refused(Exception):
     pass
-
-
-def _clean(obj) -> object:
-    """Mask credential-like text anywhere in a JSON-able structure."""
-    return json.loads(redact(json.dumps(obj))[0])
 
 
 def _env(c: dict) -> list[str]:
@@ -145,6 +140,15 @@ class Troubleshooter:
         inv = Investigation(f"inv-{now:%Y%m%d%H%M%S}-{secrets.token_hex(2)}", inc.id, now, None, "running",
                             self.model_name, self.think, [], {}, None)
         self.store.save_investigation(inv)
+        try:
+            return self._investigate(inc, inv)
+        except Exception as e:
+            # An unexpected error must not leave the run shown as running for ever.
+            inv.status, inv.error = "failed", f"internal error ({type(e).__name__})"
+            self._done(inv)
+            raise
+
+    def _investigate(self, inc: Incident, inv: Investigation) -> Investigation:
         snapshot = self.snapshot_fn()
         for i in range(self.tcfg.max_steps):
             last = i == self.tcfg.max_steps - 1
@@ -161,7 +165,7 @@ class Troubleshooter:
                     f"invalid model output ({type(e).__name__})"
                 return self._done(inv)
             thinking = redact(getattr(self.client, "last_thinking", "") or "")[0][:1000]
-            record = {"tool": step.tool, "args": _clean(step.args), "note": redact(step.note)[0],
+            record = {"tool": step.tool, "args": redact_obj(step.args), "note": redact(step.note)[0],
                       "thinking": thinking, "status": "ok", "result": "", "ref": None}
             if step.tool == "finish":
                 investigated = any(s["status"] == "ok" for s in inv.steps)
@@ -225,8 +229,8 @@ class Troubleshooter:
                 if (controller_owner(rs) or {}).get("uid") == inc.workload.uid]
 
     def _add(self, inc: Incident, kind: str, summary: str, payload: dict, now: datetime) -> str:
-        ref = f"e{self.store.next_evidence_index(inc.id)}"
-        self.store.add_evidence(inc.id, [EvidenceItem(ref, now, kind, redact(summary)[0][:400], _clean(payload))])
+        (ref,) = self.store.add_evidence(
+            inc.id, [EvidenceItem("", now, kind, redact(summary)[0][:400], redact_obj(payload))])
         return ref
 
     def _tool(self, inc: Incident, step: Step, snapshot: Snapshot, now: datetime) -> tuple[str, str]:
@@ -324,7 +328,7 @@ class Troubleshooter:
         else:
             raise Refused(f"describe supports pod, deployment and replicaset, not {kind}")
         ref = self._add(inc, "describe", f"describe {payload['kind']} {name}", payload, now)
-        return json.dumps(_clean(payload))[:MAX_RESULT], ref
+        return json.dumps(redact_obj(payload))[:MAX_RESULT], ref
 
     # --- conclusion -------------------------------------------------------------------------
     def _finish(self, inc: Incident, args: dict, snapshot: Snapshot, investigated: bool) -> dict:

@@ -10,6 +10,9 @@ metadata:
   labels:
     {{- include "kubeness.labels" . | nindent 4 }}
 {{- range $silo := (include "kubeness.silos" . | fromYaml).silos }}
+{{- /* The silo name becomes a label value and a string in the observer config. */ -}}
+{{- if not (kindIs "string" $silo.name) }}{{ fail (printf "access.silos: name %v must be a string (quote it)" $silo.name) }}{{ end }}
+{{- if not (regexMatch "^[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$" $silo.name) }}{{ fail (printf "access.silos: name %q is not a valid label value (letters, digits, - _ . and at most 63 characters)" $silo.name) }}{{ end }}
 {{- $logs := and $.Values.access.readLogs (has $silo.profile (list "investigate" "recommend" "remediate")) }}
 {{- range $silo.namespaces }}
 ---
@@ -22,8 +25,8 @@ metadata:
   namespace: {{ . }}
   labels:
     {{- include "kubeness.labels" $ | nindent 4 }}
-    kubeness/silo: {{ $silo.name }}
-    kubeness/profile: {{ $silo.profile }}
+    kubeness/silo: {{ $silo.name | quote }}
+    kubeness/profile: {{ $silo.profile | quote }}
 rules:
   - apiGroups: [""]
     resources: [pods, events]

@@ -110,6 +110,50 @@ def test_policy_fired_then_resolved():
     assert sorted(ids) == sorted([f"{inc_id}:firing:0", f"{inc_id}:resolved:0"])
 
 
+def test_policy_removed_workload_is_not_announced_as_recovered():
+    _, store, engine = setup()
+    run(engine, crashloop_status, 0, 300)
+    for t in range(300, 350, 10):
+        engine.tick(snap(at(t), pods=[]), at(t))
+    assert events_of(store) == ["firing", "resolved"]
+    resolved = store.notifications()[-1].payload
+    assert resolved["observed"].startswith("The workload is no longer present. Was: ")
+    assert "Recovered" not in resolved["text"]
+
+
+def test_policy_a_gap_between_pods_sends_nothing():
+    """All pods terminating for one evaluation (Recreate rollout): no resolved, no reopened."""
+    _, store, engine = setup()
+    run(engine, crashloop_status, 0, 300)
+    leaving = pod(statuses=[crashloop_status(300)])
+    leaving["metadata"]["deletionTimestamp"] = "2026-11-15T12:05:00Z"
+    engine.tick(snap(at(300), pods=[leaving]), at(300))
+    for t in range(310, 600, 10):
+        engine.tick(snap(at(t), pods=[pod("web-abc-2", "pod-uid-2", [crashloop_status(t, start_offset=310)])]), at(t))
+    assert events_of(store) == ["firing"]
+
+
+def test_policy_two_escalations_in_one_recurrence_are_both_announced():
+    """An OOM incident raised to warning by a second kill and later to critical by
+    escalateAfter: the second escalation must not be dropped as a duplicate id."""
+    _, store, engine = setup({"alarms": {"rules": ["oom"], "escalateAfter": "5m"},
+                              "notifications": {"digestInterval": "0s"}})
+
+    def killed(finished, restarts):
+        s = running(ready=False, restarts=restarts, started=at(finished + 1))
+        s["lastState"] = {"terminated": {"reason": "OOMKilled", "exitCode": 137,
+                                         "finishedAt": f"2026-11-15T12:00:{finished:02d}Z"}}
+        return s
+
+    engine.tick(snap(at(0), pods=[pod(statuses=[running()])]), at(0))
+    engine.tick(snap(at(10), pods=[pod(statuses=[killed(5, 1)])]), at(10))
+    run(engine, lambda t: killed(15, 2), 20, 420)
+    (inc,) = engine.open.values()
+    assert inc.severity == "critical"
+    sent = [(n.id, n.payload["severity"]) for n in store.notifications(inc.id)]
+    assert sent == [(f"{inc.id}:escalated:0:warning", "warning"), (f"{inc.id}:escalated:0:critical", "critical")]
+
+
 def test_policy_pending_that_is_cancelled_is_silent():
     _, store, engine = setup()
     engine.tick(snap(at(0), pods=[pod(statuses=[waiting(reason="ErrImagePull", image_id="")])]), at(0))
@@ -251,6 +295,29 @@ def test_sender_gives_up_after_max_attempts():
     assert any("failed after 3 attempts" in a.message for a in store.activity(n.incident_id))
 
 
+def test_sender_backoff_does_not_overflow_with_many_attempts():
+    """timedelta * 2**n overflowed from attempt 44 and left the row in `sending`."""
+    cfg, store, n = firing_setup(maxAttempts=100, backoff="10s", backoffMax="10m")
+    store.update_notification(n.id, attempts=60)
+    sender = Sender(cfg, store, FakeClient(fail_until=True))
+    sender.run_once(at(300))
+    (r,) = store.notifications()
+    assert (r.status, r.attempts, r.next_attempt_at) == ("retry_scheduled", 61, at(900))
+
+
+def test_sender_retries_after_an_unexpected_error():
+    class Broken(FakeClient):
+        def send(self, payload, timeout):
+            raise RuntimeError("bug in the client")
+
+    cfg, store, n = firing_setup(backoff="10s")
+    sender = Sender(cfg, store, Broken())
+    assert sender.run_once(at(300)) == 0
+    (r,) = store.notifications()
+    assert (r.status, r.attempts, r.next_attempt_at) == ("retry_scheduled", 1, at(310))
+    assert r.last_error == "RuntimeError: bug in the client"
+
+
 def test_sender_start_recovers_interrupted_sends():
     cfg, store, n = firing_setup()
     store.update_notification(n.id, status="sending")
@@ -287,6 +354,35 @@ def test_heartbeat_only_while_observer_is_ok():
     for t in range(3600, 7200, 10):
         sender.heartbeat_once(at(t), observer_ok=False)
     assert client.heartbeats == 12
+
+
+def test_observer_status_is_only_asked_when_a_heartbeat_is_due():
+    """The sender loop runs every couple of seconds; the status behind observer_ok costs queries."""
+    def asked(interval: str) -> int:
+        cfg = Config.model_validate({"notifications": {"enabled": True, "heartbeatInterval": interval,
+                                                       "sendInterval": "1s"}})
+        sender = Sender(cfg, Store(":memory:"), FakeClient())
+        calls = []
+        for t in range(0, 600, 2):          # what the loop in start() does on every round
+            if sender.heartbeat_due(at(t)):
+                calls.append(t)
+                sender.heartbeat_once(at(t), observer_ok=True)
+        return len(calls)
+
+    assert asked("0s") == 0
+    assert asked("5m") == 2
+
+
+def test_the_sender_loop_does_not_ask_for_status_without_a_heartbeat():
+    cfg = Config.model_validate({"notifications": {"enabled": True, "sendInterval": "1s"}})
+    sender = Sender(cfg, Store(":memory:"), FakeClient())
+    stop, asked = threading.Event(), []
+    sender.cfg.send_interval = sender.cfg.send_interval / 100     # 10 ms rounds
+    t = sender.start(stop, lambda: asked.append(1) or True)
+    time.sleep(0.2)
+    stop.set()
+    t.join(timeout=2)
+    assert asked == []
 
 
 def test_heartbeat_disabled_by_default():

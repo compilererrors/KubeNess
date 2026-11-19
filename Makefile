@@ -12,7 +12,7 @@ MODEL_TAG   ?= qwen3-0.6b
 MODEL_IMAGE := kubeness-model:$(MODEL_TAG)
 CILIUM   := 1.20.4
 
-.PHONY: test kpi verify model model-tiered model-compare e2e redeploy cluster cilium image model-image sink install faults clean-faults verify-rbac ui api-server-cidr
+.PHONY: test kpi constraints verify model model-tiered model-compare e2e redeploy cluster cilium image model-image sink install faults clean-faults verify-rbac ui api-server-cidr
 
 test:
 	.venv/bin/ruff check src tests --select E,F,W,B --ignore E501
@@ -21,6 +21,10 @@ test:
 # Simulated KPI benchmarks only; the table is printed at the end.
 kpi:
 	.venv/bin/pytest -q tests/kpi
+
+# Pins what the image installs to the versions in .venv, the ones the tests ran with.
+constraints:
+	.venv/bin/python lab/constraints.py
 
 # Builds, (re)deploys and runs the end-to-end suite against the kind cluster.
 e2e: redeploy
